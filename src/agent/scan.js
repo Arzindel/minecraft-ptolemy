@@ -11,14 +11,15 @@ const FACINGS = {
 
 /**
  * Cells to scan, in the agent's own frame (right, up, forward).
- * With `cube` (an odd edge length, e.g. 5) it's a cube centred on the agent. Otherwise it's
+ * With `radius` (e.g. 2) it's a cube reaching that many blocks out from the agent in every
+ * direction (so 5x5x5 for radius 2), matching the Nanny Cam's Zoom. Otherwise it's
  * the default field of view: everything within 1 block (diagonals included, and its own cell),
  * widened by 1 block to each side and extended 2 blocks forward.
  */
-function localCells(cube) {
+function localCells(radius) {
   const cells = [];
-  if (cube) {
-    const r = Math.floor(cube / 2);
+  if (radius) {
+    const r = radius;
     for (let up = -r; up <= r; up++) {
       for (let forward = -r; forward <= r; forward++) {
         for (let right = -r; right <= r; right++) cells.push({ right, up, forward });
@@ -57,7 +58,7 @@ function blockFromTestResponse(res) {
  * Scan the blocks around the agent. Returns the agent's pose and one entry per cell,
  * with both world coordinates and coordinates relative to the agent.
  */
-async function scanAroundAgent(bridge, { cube } = {}) {
+async function scanAroundAgent(bridge, { radius } = {}) {
   const started = Date.now();
   const pose = await bridge.sendCommand('agent getposition', { quiet: true });
   if (!pose.ok || !pose.body || !pose.body.position) {
@@ -70,7 +71,7 @@ async function scanAroundAgent(bridge, { cube } = {}) {
   const [fx, , fz] = facing.forward;
   const [rx, , rz] = facing.right;
 
-  const cells = await Promise.all(localCells(cube).map(async (cell) => {
+  const cells = await Promise.all(localCells(radius).map(async (cell) => {
     const x = ax + cell.right * rx + cell.forward * fx;
     const y = ay + cell.up;
     const z = az + cell.right * rz + cell.forward * fz;

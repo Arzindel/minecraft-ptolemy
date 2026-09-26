@@ -68,7 +68,8 @@
       case 'sight':
       case 'path':
       case 'agent':
-        // For the Nanny Cam.
+      case 'settings':
+        // For the Nanny Cam and the Configuration tab.
         document.dispatchEvent(new CustomEvent(`ptolemy:${msg.type}`, { detail: msg }));
         break;
       default:

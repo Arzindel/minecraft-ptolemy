@@ -5,8 +5,6 @@ const { getAgentPose, samePose, describePose } = require('./pose');
 
 const SAFE_WAIT_MS = 2000;
 const SAFE_POLL_MS = 100;
-const DEFAULT_SCAN_SIZE = 15;
-const DEFAULT_RETRIES = 3;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const round = (n) => Math.round(n * 10) / 10;
@@ -22,14 +20,17 @@ class Navigator {
    * @param {object} deps
    * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
    * @param {import('./world').WorldKnowledge} deps.world
-   * @param {(size: number, opts?: {quiet?: boolean}) => Promise<object|null>} deps.scan  refreshes Sight
+   * @param {(radius: number, opts?: {quiet?: boolean}) => Promise<object|null>} deps.scan  refreshes Sight
    * @param {(text: string, extra?: object) => void} deps.log
    * @param {(message: object) => void} deps.broadcast
    */
-  constructor({ bridge, world, scan, log, broadcast }) {
-    Object.assign(this, { bridge, world, scan, log, broadcast });
-    this.path = null; // { start, goal, steps, cells, unknownSteps }
-    this.safe = false; // poll the pose for a while after each step instead of checking once
+  constructor({ bridge, world, settings, scan, log, broadcast }) {
+    Object.assign(this, { bridge, world, settings, scan, log, broadcast });
+    // One stored path per kind ({ start, goal, steps, cells, unknownSteps }). A stored path is only
+    // valid while the agent is at its start, so it's dropped as soon as the agent moves, unless
+    // that path is the one being walked.
+    this.paths = { walk: null, fly: null };
+    this.walking = null; // the kind being walked right now
     this.busy = false;
     this.stopRequested = false;
   }
@@ -37,109 +38,144 @@ class Navigator {
   // --- Console entry points -------------------------------------------------
 
   async pathfind(args, { fly = false } = {}) {
+    const kind = kindOf(fly);
     await this._exclusive(async () => {
       const start = await getAgentPose(this.bridge);
+      this.agentMoved(start);
       const goal = await this._resolveGoal(args, start);
-      const plan = planPath(this.world, start, goal, { hug: !fly });
+      const plan = planPath(this.world, start, goal, this._planOptions(fly));
       if (plan.error) {
-        this._setPath(null);
+        this._setPath(kind, null);
         this.log(`No path to ${describeGoal(goal)}: ${plan.error}.`);
         return;
       }
-      this._setPath({ start, goal, fly, ...plan });
-      this.log(this._describePlan(plan, goal, fly), { commandLine: 'Path', body: this.path });
+      this._setPath(kind, { start, goal, ...plan });
+      this.log(this._describePlan(plan, goal, fly), { commandLine: 'Path', body: this.paths[kind] });
     });
   }
 
-  async pathwalk() {
+  async pathwalk({ fly = false } = {}) {
+    const kind = kindOf(fly);
+    const find = fly ? '#flypathfind' : '#pathfind';
     await this._exclusive(async () => {
-      if (!this.path) {
-        this.log('There is no path to walk. Run #pathfind first.');
+      const path = this.paths[kind];
+      if (!path) {
+        this.log(`There is no ${fly ? 'flight ' : ''}path to walk. Run ${find} first.`);
         return;
       }
       const pose = await getAgentPose(this.bridge);
-      if (!samePose(pose, this.path.start)) {
-        this.log(`The agent isn't where this path starts (it's at ${describePose(pose)}, the path starts at `
-          + `${describePose(this.path.start)}). Run #pathfind again.`);
+      if (!samePose(pose, path.start)) {
+        this.agentMoved(pose);
+        this.log(`The agent moved since the path was planned (it's at ${describePose(pose)}, the path started at `
+          + `${describePose(path.start)}), so the path was dropped. Run ${find} again.`);
         return;
       }
-      const result = await this._walk(this.path.steps);
+      this.walking = kind;
+      const result = await this._walk(path.steps);
+      this.walking = null;
+      this._finishPath(kind);
       if (result.ok) this.log(`Arrived at ${describePose(result.pose)}.`);
-      else this.log(`Walk interrupted at step ${result.index + 1}/${this.path.steps.length}: ${result.reason}.`);
+      else if (result.stopped) this.log(`Stopped by #pathstop at ${describePose(result.pose)}.`);
+      else this.log(`Walk interrupted at step ${result.index + 1}/${path.steps.length}: ${result.reason}.`);
     });
   }
 
-  async pathfindwalk(args, { scanSize = DEFAULT_SCAN_SIZE, retries = DEFAULT_RETRIES, fly = false } = {}) {
+  /**
+   * The agent is at `pose`: drop every stored path it isn't at the start of anymore,
+   * except the one being walked.
+   */
+  agentMoved(pose) {
+    for (const kind of Object.keys(this.paths)) {
+      const path = this.paths[kind];
+      if (!path || kind === this.walking || samePose(pose, path.start)) continue;
+      this._setPath(kind, null);
+      this.log(`The stored ${kind === 'fly' ? 'flight path' : 'path'} was dropped because the agent moved.`);
+    }
+  }
+
+  async pathfindwalk(args, {
+    scanRadius = this.settings.get('path.scanRadius'), retries = this.settings.get('path.retries'), fly = false,
+  } = {}) {
+    const kind = kindOf(fly);
     await this._exclusive(async () => {
-      const radius = (scanSize - 1) / 2;
-      await this.scan(scanSize, { quiet: true });
-      let pose = await getAgentPose(this.bridge);
-      let goal = await this._resolveGoal(args, pose);
-
-      // Rescans on the way into unknown territory are budgeted by distance, so a robot trying
-      // to get into a closed box gives up instead of looping forever.
-      const distance = Math.hypot(goal.x - pose.x, goal.y - pose.y, goal.z - pose.z);
-      const maxRescans = Math.max(1, Math.ceil((1.5 * distance) / radius));
-      let rescans = 0;
-      let failures = 0;
-      this.log(`Heading to ${describeGoal(goal)}, ${round(distance)} blocks away `
-        + `(up to ${retries} retries and ${maxRescans} rescans with ${scanSize}³ scans).`);
-
-      for (;;) {
-        // A target that turned out to be solid once seen means "go next to it".
-        if (!goal.cells && this.world.state(goal.x, goal.y, goal.z) === 'solid') {
-          goal = { ...goal, cells: cellsAround(goal.x, goal.y, goal.z) };
-        }
-        const plan = planPath(this.world, pose, goal, { hug: !fly });
-        if (plan.error) {
-          this._setPath(null);
-          this.log(`Stopped: no path to ${describeGoal(goal)} from ${describePose(pose)}: ${plan.error}.`);
-          return;
-        }
-        this._setPath({ start: pose, goal, fly, ...plan });
-        if (!plan.steps.length) {
-          this.log(`Arrived at ${describePose(pose)}.`);
-          return;
-        }
-
-        // Walk until the plan is about to enter an unknown cell, then look before going on.
-        const firstUnknown = plan.steps.findIndex((s) => s.unknown);
-        const known = firstUnknown === -1 ? plan.steps : plan.steps.slice(0, firstUnknown);
-        const result = await this._walk(known);
-        pose = result.pose;
-
-        if (result.stopped) {
-          this.log(`Stopped by #pathstop at ${describePose(pose)}.`);
-          return;
-        }
-        if (!result.ok) {
-          failures++;
-          this.log(`Step failed (${failures}/${retries} retries used): ${result.reason}.`);
-          if (failures > retries) {
-            this.log(`Giving up after ${failures} failed steps, at ${describePose(pose)}.`);
-            return;
-          }
-          // Something is in the way that we didn't know about: remember it, look again, re-plan.
-          if (result.step.enters) this.world.markBlocked(...result.step.enters);
-          await this.scan(scanSize, { quiet: true });
-          pose = await getAgentPose(this.bridge);
-          continue;
-        }
-        if (firstUnknown === -1) {
-          this.log(`Arrived at ${describePose(pose)}.`);
-          return;
-        }
-
-        rescans++;
-        if (rescans > maxRescans) {
-          this.log(`Giving up: ${maxRescans} rescans used without reaching ${describeGoal(goal)}, `
-            + `at ${describePose(pose)}. The target may be enclosed.`);
-          return;
-        }
-        this.log(`Entering unknown territory at ${describePose(pose)}; rescanning (${rescans}/${maxRescans}).`);
-        await this.scan(scanSize, { quiet: true });
+      this.walking = kind;
+      try {
+        await this._pathfindwalk(kind, args, { scanRadius, retries, fly });
+      } finally {
+        this.walking = null;
+        this._finishPath(kind);
       }
     });
+  }
+
+  async _pathfindwalk(kind, args, { scanRadius: radius, retries, fly }) {
+    await this.scan(radius, { quiet: true });
+    let pose = await getAgentPose(this.bridge);
+    let goal = await this._resolveGoal(args, pose);
+
+    // Rescans on the way into unknown territory are budgeted by distance, so a robot trying
+    // to get into a closed box gives up instead of looping forever.
+    const distance = Math.hypot(goal.x - pose.x, goal.y - pose.y, goal.z - pose.z);
+    const maxRescans = Math.max(1, Math.ceil((1.5 * distance) / radius));
+    let rescans = 0;
+    let failures = 0;
+    this.log(`Heading to ${describeGoal(goal)}, ${round(distance)} blocks away `
+      + `(up to ${retries} retries and ${maxRescans} rescans of radius ${radius}).`);
+
+    for (;;) {
+      // A target that turned out to be solid once seen means "go next to it".
+      if (!goal.cells && this.world.state(goal.x, goal.y, goal.z) === 'solid') {
+        goal = { ...goal, cells: cellsAround(goal.x, goal.y, goal.z) };
+      }
+      const plan = planPath(this.world, pose, goal, this._planOptions(fly));
+      if (plan.error) {
+        this._setPath(kind, null);
+        this.log(`Stopped: no path to ${describeGoal(goal)} from ${describePose(pose)}: ${plan.error}.`);
+        return;
+      }
+      this._setPath(kind, { start: pose, goal, ...plan });
+      if (!plan.steps.length) {
+        this.log(`Arrived at ${describePose(pose)}.`);
+        return;
+      }
+
+      // Walk until the plan is about to enter an unknown cell, then look before going on.
+      const firstUnknown = plan.steps.findIndex((s) => s.unknown);
+      const known = firstUnknown === -1 ? plan.steps : plan.steps.slice(0, firstUnknown);
+      const result = await this._walk(known);
+      pose = result.pose;
+
+      if (result.stopped) {
+        this.log(`Stopped by #pathstop at ${describePose(pose)}.`);
+        return;
+      }
+      if (!result.ok) {
+        failures++;
+        this.log(`Step failed (${failures}/${retries} retries used): ${result.reason}.`);
+        if (failures > retries) {
+          this.log(`Giving up after ${failures} failed steps, at ${describePose(pose)}.`);
+          return;
+        }
+        // Something is in the way that we didn't know about: remember it, look again, re-plan.
+        if (result.step.enters) this.world.markBlocked(...result.step.enters);
+        await this.scan(radius, { quiet: true });
+        pose = await getAgentPose(this.bridge);
+        continue;
+      }
+      if (firstUnknown === -1) {
+        this.log(`Arrived at ${describePose(pose)}.`);
+        return;
+      }
+
+      rescans++;
+      if (rescans > maxRescans) {
+        this.log(`Giving up: ${maxRescans} rescans used without reaching ${describeGoal(goal)}, `
+          + `at ${describePose(pose)}. The target may be enclosed.`);
+        return;
+      }
+      this.log(`Entering unknown territory at ${describePose(pose)}; rescanning (${rescans}/${maxRescans}).`);
+      await this.scan(radius, { quiet: true });
+    }
   }
 
   stop() {
@@ -151,14 +187,27 @@ class Navigator {
     this.log('Stopping after the current step...');
   }
 
+  get safe() {
+    return this.settings.get('path.safe');
+  }
+
   setSafe(on) {
-    this.safe = on;
+    this.settings.update({ 'path.safe': on });
     this.log(`Path safe mode is ${on ? 'on' : 'off'}: `
       + (on ? `after each step, wait up to ${SAFE_WAIT_MS / 1000}s for the agent to arrive.`
         : 'each step is checked once, as soon as the game acknowledges it.'));
   }
 
   // --- Internals ------------------------------------------------------------
+
+  _planOptions(fly) {
+    return {
+      hug: !fly,
+      costs: this.settings.costs(),
+      turnCost: this.settings.get('path.turnCost'),
+      unknownPenalty: this.settings.get('path.unknownPenalty'),
+    };
+  }
 
   async _exclusive(fn) {
     if (!this.bridge.connected) {
@@ -198,6 +247,7 @@ class Navigator {
         await sleep(SAFE_POLL_MS);
       }
       this.broadcast({ type: 'agent', position: { x: pose.x, y: pose.y, z: pose.z }, yRot: pose.yRot });
+      this.agentMoved(pose);
       if (!samePose(pose, step.expect)) {
         return {
           ok: false, index: i, step, pose,
@@ -247,9 +297,16 @@ class Navigator {
     return { x, y, z, cells: cellsAround(x, y, z) };
   }
 
-  _setPath(path) {
-    this.path = path;
-    this.broadcast(pathMessage(path));
+  _setPath(kind, path) {
+    this.paths[kind] = path;
+    this.broadcast(pathMessage(kind, path));
+  }
+
+  /** A walked path is used up: drop it, but leave its cells on the Nanny Cam as a faded trail. */
+  _finishPath(kind) {
+    const path = this.paths[kind];
+    this.paths[kind] = null;
+    if (path) this.broadcast({ ...pathMessage(kind, path), trail: true });
   }
 
   _describePlan(plan, goal, fly) {
@@ -259,7 +316,8 @@ class Navigator {
     return `${fly ? 'Flight path' : 'Path'} to ${describeGoal(goal)}: `
       + `${plan.steps.length} steps (${moves} moves, ${turns} turns)`
       + (plan.unknownSteps ? `, ${plan.unknownSteps} through unknown cells` : ', all through known cells')
-      + `\n  ${summarizeSteps(plan.steps)}\n  Run #pathwalk to walk it.`;
+      + (plan.approximate ? ' (a quick estimate: every route was expensive, so it may not be the cheapest)' : '')
+      + `\n  ${summarizeSteps(plan.steps)}\n  Run ${fly ? '#flypathwalk' : '#pathwalk'} to walk it.`;
   }
 }
 
@@ -269,8 +327,12 @@ function describeGoal(goal) {
   return goal.cells ? `next to ${where}` : where;
 }
 
-function pathMessage(path) {
-  return { type: 'path', cells: path ? path.cells : [] };
+function kindOf(fly) {
+  return fly ? 'fly' : 'walk';
 }
 
-module.exports = { Navigator, pathMessage, DEFAULT_SCAN_SIZE, DEFAULT_RETRIES };
+function pathMessage(kind, path) {
+  return { type: 'path', kind, cells: path ? path.cells : [] };
+}
+
+module.exports = { Navigator, pathMessage };
