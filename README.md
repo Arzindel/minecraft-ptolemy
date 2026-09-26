@@ -94,6 +94,8 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
+| `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
+| `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
 | `#subscriptions` | List the current subscriptions, which are re-sent whenever Minecraft reconnects |
 | `#help` | Show this list |
 
