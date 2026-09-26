@@ -1,0 +1,226 @@
+'use strict';
+
+const { FORWARD, turnLeft, turnRight } = require('./pose');
+
+// Every agent command costs 1. Stepping into a cell nobody has seen costs a little more,
+// so known routes win when they're about as short, but unknown cells are still allowed
+// (optimistic planning: the walker rescans before entering them).
+const UNKNOWN_PENALTY = 0.5;
+// Ground-hugging mode: entering a cell with no solid block anywhere around it (diagonals included)
+// costs this much extra, so the robot walks along surfaces like it has legs, and only floats when
+// that's much shorter (crossing a gap, starting mid-air).
+const FLOATING_PENALTY = 6;
+const MAX_EXPANSIONS = 400000;
+const SEARCH_MARGIN = 32;
+const WORLD_MIN_Y = -64;
+const WORLD_MAX_Y = 319;
+
+const FLOOD_LIMIT = 50000;
+
+/**
+ * Plan a route for the agent (a 1x1x1 flyer) from `start` ({x, y, z, facing}) to a goal.
+ *
+ * The goal is { x, y, z } (end exactly there) or { x, y, z, cells } (end on any of those cells,
+ * e.g. the cells around a player or around a solid block).
+ *
+ * The agent always faces where it travels: horizontal moves are `move forward`, preceded by
+ * turns. Vertical moves don't need turning.
+ *
+ * Returns { steps, cells, unknownSteps } or { error }.
+ */
+function planPath(world, start, goal, { hug = false } = {}) {
+  const goalCells = goal.cells || [[goal.x, goal.y, goal.z]];
+  const goalKeys = new Set(goalCells.map((c) => c.join(',')));
+  const isGoal = (x, y, z) => goalKeys.has(`${x},${y},${z}`);
+  const slack = Math.max(...goalCells.map(([x, y, z]) => Math.abs(x - goal.x) + Math.abs(y - goal.y) + Math.abs(z - goal.z)));
+  const heuristic = (x, y, z) => Math.max(0,
+    Math.abs(x - goal.x) + Math.abs(y - goal.y) + Math.abs(z - goal.z) - slack);
+
+  const open = goalCells.filter(([x, y, z]) => world.state(x, y, z) !== 'solid');
+  if (!open.length) {
+    return { error: goal.cells ? 'every cell next to the target is solid' : `${goal.x} ${goal.y} ${goal.z} is a solid block` };
+  }
+  if (isGoal(start.x, start.y, start.z)) return { steps: [], cells: [[start.x, start.y, start.z]], unknownSteps: 0 };
+  if (isSealed(world, open, start)) {
+    return { error: 'the target is sealed in: every way to it is blocked by known solid blocks' };
+  }
+
+  // Keep the search inside a box around the start, the goal and what's known.
+  const known = world.bounds();
+  const lo = [Math.min(start.x, goal.x), Math.min(start.y, goal.y), Math.min(start.z, goal.z)];
+  const hi = [Math.max(start.x, goal.x), Math.max(start.y, goal.y), Math.max(start.z, goal.z)];
+  if (known) {
+    for (let i = 0; i < 3; i++) {
+      lo[i] = Math.min(lo[i], known.min[i]);
+      hi[i] = Math.max(hi[i], known.max[i]);
+    }
+  }
+  const inBox = (x, y, z) => x >= lo[0] - SEARCH_MARGIN && x <= hi[0] + SEARCH_MARGIN
+    && z >= lo[2] - SEARCH_MARGIN && z <= hi[2] + SEARCH_MARGIN
+    && y >= Math.max(WORLD_MIN_Y, lo[1] - SEARCH_MARGIN) && y <= Math.min(WORLD_MAX_Y, hi[1] + SEARCH_MARGIN);
+
+  // Is there something solid (or possibly solid, if unknown) touching this cell?
+  const touchCache = new Map();
+  const touchesSomething = (x, y, z) => {
+    const k = `${x},${y},${z}`;
+    if (touchCache.has(k)) return touchCache.get(k);
+    let found = false;
+    for (let dx = -1; dx <= 1 && !found; dx++) {
+      for (let dy = -1; dy <= 1 && !found; dy++) {
+        for (let dz = -1; dz <= 1 && !found; dz++) {
+          if ((dx || dy || dz) && world.state(x + dx, y + dy, z + dz) !== 'free') found = true;
+        }
+      }
+    }
+    touchCache.set(k, found);
+    return found;
+  };
+
+  const stateKey = (x, y, z, f) => `${x},${y},${z},${f}`;
+  const startKey = stateKey(start.x, start.y, start.z, start.facing);
+  const cameFrom = new Map([[startKey, null]]);
+  const bestCost = new Map([[startKey, 0]]);
+  const queue = new MinHeap();
+  queue.push(heuristic(start.x, start.y, start.z), { x: start.x, y: start.y, z: start.z, facing: start.facing, cost: 0 });
+
+  let expansions = 0;
+  let reached = null;
+  while (queue.size) {
+    const node = queue.pop();
+    const k = stateKey(node.x, node.y, node.z, node.facing);
+    if (node.cost > bestCost.get(k)) continue; // stale heap entry
+    if (isGoal(node.x, node.y, node.z)) { reached = node; break; }
+    if (++expansions > MAX_EXPANSIONS) return { error: 'search gave up (the area is too large or too maze-like)' };
+
+    const [fx, , fz] = FORWARD[node.facing];
+    const moves = [
+      ['forward', node.x + fx, node.y, node.z + fz, node.facing],
+      ['up', node.x, node.y + 1, node.z, node.facing],
+      ['down', node.x, node.y - 1, node.z, node.facing],
+      ['turn right', node.x, node.y, node.z, turnRight(node.facing)],
+      ['turn left', node.x, node.y, node.z, turnLeft(node.facing)],
+    ];
+    for (const [action, x, y, z, facing] of moves) {
+      let cost = node.cost + 1;
+      if (!action.startsWith('turn')) {
+        if (!inBox(x, y, z)) continue;
+        const state = world.state(x, y, z);
+        if (state === 'solid') continue;
+        if (state === 'unknown') cost += UNKNOWN_PENALTY;
+        if (hug && !touchesSomething(x, y, z)) cost += FLOATING_PENALTY;
+      }
+      const nk = stateKey(x, y, z, facing);
+      if (bestCost.has(nk) && bestCost.get(nk) <= cost) continue;
+      bestCost.set(nk, cost);
+      cameFrom.set(nk, { from: k, action });
+      queue.push(cost + heuristic(x, y, z), { x, y, z, facing, cost });
+    }
+  }
+
+  if (!reached) {
+    return { error: 'the target cannot be reached' };
+  }
+
+  // Walk back from the goal, then turn the chain into commands with the pose expected after each.
+  const chain = [];
+  for (let k = stateKey(reached.x, reached.y, reached.z, reached.facing); cameFrom.get(k); k = cameFrom.get(k).from) {
+    const [x, y, z, facing] = k.split(',').map(Number);
+    chain.push({ action: cameFrom.get(k).action, expect: { x, y, z, facing } });
+  }
+  chain.reverse();
+
+  const steps = chain.map(({ action, expect }) => ({
+    action,
+    command: action.startsWith('turn') ? `agent ${action}` : `agent move ${action}`,
+    expect,
+    enters: action.startsWith('turn') ? null : [expect.x, expect.y, expect.z],
+    unknown: !action.startsWith('turn') && world.state(expect.x, expect.y, expect.z) === 'unknown',
+  }));
+  const cells = [[start.x, start.y, start.z], ...steps.filter((s) => s.enters).map((s) => s.enters)];
+  return { steps, cells, unknownSteps: steps.filter((s) => s.unknown).length };
+}
+
+/**
+ * Flood outwards from the goal cells through free cells. If the fill runs out without touching
+ * an unknown cell or the start, the goal is sealed off and searching for a route is pointless.
+ */
+function isSealed(world, goalCells, start) {
+  const seen = new Set(goalCells.map((c) => c.join(',')));
+  const stack = [...goalCells];
+  while (stack.length) {
+    const [x, y, z] = stack.pop();
+    if (x === start.x && y === start.y && z === start.z) return false;
+    const state = world.state(x, y, z);
+    if (state === 'unknown') return false;
+    if (seen.size > FLOOD_LIMIT) return false; // big open area: let the search decide
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const n = [x + dx, y + dy, z + dz];
+      const k = n.join(',');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (world.state(...n) !== 'solid') stack.push(n);
+    }
+  }
+  return true;
+}
+
+/** "forward ×3, turn left, up ×2" */
+function summarizeSteps(steps) {
+  const parts = [];
+  for (const { action } of steps) {
+    const last = parts[parts.length - 1];
+    if (last && last.action === action) last.count++;
+    else parts.push({ action, count: 1 });
+  }
+  return parts.map(({ action, count }) => (count > 1 ? `${action} ×${count}` : action)).join(', ');
+}
+
+class MinHeap {
+  constructor() { this.items = []; }
+
+  get size() { return this.items.length; }
+
+  push(priority, value) {
+    const items = this.items;
+    items.push({ priority, value });
+    for (let i = items.length - 1; i > 0;) {
+      const parent = (i - 1) >> 1;
+      if (items[parent].priority <= items[i].priority) break;
+      [items[parent], items[i]] = [items[i], items[parent]];
+      i = parent;
+    }
+  }
+
+  pop() {
+    const items = this.items;
+    const top = items[0];
+    const last = items.pop();
+    if (items.length) {
+      items[0] = last;
+      for (let i = 0; ;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < items.length && items[l].priority < items[m].priority) m = l;
+        if (r < items.length && items[r].priority < items[m].priority) m = r;
+        if (m === i) break;
+        [items[m], items[i]] = [items[i], items[m]];
+        i = m;
+      }
+    }
+    return top.value;
+  }
+}
+
+/** Goal cells around a block: its 26 neighbours. */
+function cellsAround(x, y, z) {
+  const cells = [];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dz = -1; dz <= 1; dz++) if (dx || dy || dz) cells.push([x + dx, y + dy, z + dz]);
+    }
+  }
+  return cells;
+}
+
+module.exports = { planPath, summarizeSteps, cellsAround };

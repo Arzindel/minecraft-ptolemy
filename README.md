@@ -95,6 +95,12 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
 | `#scan` / `#scan <size>` | Identify every block around the agent: its field of view, or with a size like `5` a 5×5×5 cube centred on it (odd sizes up to 31). See [Scanning](#scanning) |
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
+| `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
+| `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
+| `#pathfindwalk <x y z \| @p> [scan=15] [retries=3]` | Plan and walk, rescanning when entering unknown territory and re-planning when something is in the way |
+| `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
+| `#pathsafe on\|off` | Off (default): each step is checked once, as soon as the game answers. On: wait up to 2s for the agent to arrive |
+| `#pathstop` | Stop a running walk after the current step |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
 | `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
@@ -135,6 +141,31 @@ The field of view, relative to the agent (right, up, forward), is 63 blocks:
 `#scan` prints three top-down layers (above, level, below) from the agent's point of view. Forward
 is up the page and `[ ]` marks the agent's cell. Click the result to see every cell with its world
 and relative coordinates.
+
+## Pathfinding
+
+The agent flies like a 1×1×1 drone and can move through anything that isn't solid (air, water,
+plants, torches...). A move into a solid block reports success, but the agent just shakes its head
+and stays put. So the pathfinder plans over what the robot knows, and the walker checks every step.
+
+- **Targets:** `x y z`, where each part can be `~` or `~n` relative to the agent, or `@p` for you.
+  `@p` ends beside you at body height. A solid target means "go next to it".
+- **Planning** is an A* search over position and facing. The robot turns to face where it's going
+  (it looks better) and moves up and down without turning. Cells it hasn't seen are allowed but
+  cost a little more (optimistic planning). A target sealed in by known solid blocks is refused
+  straight away.
+- **`#pathfind` vs `#flypathfind`:** the plain version strongly prefers cells that touch a block
+  (diagonals included), so the robot walks along the ground and climbs walls like it has legs. The fly
+  version takes the shortest route through the air.
+- **Walking:** every step has an expected pose (position and facing). After each step Ptolemy runs
+  `agent getposition`, and the walk stops at the first mismatch. With `#pathsafe on` it polls for up
+  to 2 seconds first, in case moves turn out not to be instant.
+- **`#pathfindwalk`** scans first, then walks. Before entering unknown cells it stops, rescans and
+  re-plans. Those rescans are budgeted at ⌈1.5 × distance ÷ scan radius⌉, so a robot trying to get
+  into a closed box gives up. When a step fails (someone closed the door), it marks that cell as
+  blocked, rescans and re-plans. That counts as a retry, and it hard-stops after `retries` failures.
+- **Nanny Cam:** the planned route shows as cyan beads, which fade as the robot walks them. The
+  robot's marker follows it while it walks.
 
 ## Nanny Cam
 

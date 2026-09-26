@@ -66,7 +66,10 @@
         appendLog(msg.entry);
         break;
       case 'sight':
-        document.dispatchEvent(new CustomEvent('ptolemy:sight', { detail: msg }));
+      case 'path':
+      case 'agent':
+        // For the Nanny Cam.
+        document.dispatchEvent(new CustomEvent(`ptolemy:${msg.type}`, { detail: msg }));
         break;
       default:
         break;
