@@ -93,13 +93,13 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | --- | --- |
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
-| `#scan` / `#scan <radius>` | Identify every block around the agent: its field of view, or a cube reaching `radius` blocks out in every direction (radius 2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom. See [Scanning](#scanning) |
+| `#scan` / `#scan <radius>` | Identify every block in a cube reaching `radius` blocks out from the agent in every direction (2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom. Without a radius it uses the default from the Configuration tab (4). See [Scanning](#scanning) |
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
 | `#pathfindwalk <x y z \| @p> [scan=7] [retries=3]` | Plan and walk, rescanning when entering unknown territory and re-planning when something is in the way |
 | `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
-| `#pathsafe on\|off` | Off (default): each step is checked once, as soon as the game answers. On: wait up to 2s for the agent to arrive |
+| `#pathsafe on\|off` | On (default): if the agent isn't where it should be after a step, keep checking for up to 2s before calling it a failure. That costs nothing when steps succeed straight away. Off: check once |
 | `#pathstop` | Stop a running walk after the current step |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
@@ -129,14 +129,11 @@ return no data. Only `agent getposition` does. So Ptolemy senses the world with 
 
 1. `agent getposition` gives the agent's block position and `y-rot`, snapped to a facing:
    `0` → Z+, `90` → X-, `±180` → Z-, `-90` → X+.
-2. For every cell in the agent's field of view, `testforblock x y z air` either matches (air) or fails
+2. For every cell in a cube around the agent, `testforblock x y z air` either matches (air) or fails
    with "The block at X,Y,Z is Oak Log (expected: Air)", which names the block.
 
-The field of view, relative to the agent (right, up, forward), is 63 blocks:
-
-- everything within 1 block, diagonals and the agent's own cell included (in case it's standing in water),
-- widened by 1 block to each side: right −2…2, up −1…1, forward −1…1,
-- plus 2 more blocks forward: right −1…1, up −1…1, forward 2…3.
+It's fast: with 100 commands in flight, Bedrock answers about 1,000 blocks a second, so a radius-15
+scan (29,791 blocks) takes about 30 seconds.
 
 `#scan` prints three top-down layers (above, level, below) from the agent's point of view. Forward
 is up the page and `[ ]` marks the agent's cell. Click the result to see every cell with its world

@@ -13,6 +13,7 @@
   const radiusInput = $('cam-radius');
   const radiusValue = $('cam-radius-value');
   const scanRadius = $('cam-scan-radius');
+  const scanSize = $('cam-scan-size');
   const scanButton = $('cam-scan');
 
   const AGENT_COLOR = [0.95, 0.76, 0.2, 1];
@@ -399,7 +400,7 @@
   });
 
   scanButton.addEventListener('click', () => {
-    window.ptolemy.send({ type: 'scan', radius: scanRadius.value ? Number(scanRadius.value) : null });
+    window.ptolemy.send({ type: 'scan', radius: Number(scanRadius.value) });
     info.textContent = 'Scanning...';
   });
 
@@ -410,6 +411,21 @@
     empty.hidden = true;
     rebuild();
   });
+
+  // Scan radius: starts at the configured #scan default, shows the cube it covers.
+  const showScanSize = () => {
+    const r = Math.max(1, Math.min(15, Math.round(Number(scanRadius.value) || 1)));
+    scanSize.textContent = `${2 * r + 1}³ · ${((2 * r + 1) ** 3).toLocaleString()} blocks`;
+  };
+  scanRadius.addEventListener('input', showScanSize);
+  let scanRadiusTouched = false;
+  scanRadius.addEventListener('change', () => { scanRadiusTouched = true; });
+  document.addEventListener('ptolemy:settings', (ev) => {
+    if (scanRadiusTouched) return;
+    scanRadius.value = ev.detail.values['scan.radius'];
+    showScanSize();
+  });
+  showScanSize();
 
   document.addEventListener('ptolemy:path', (ev) => {
     const { kind = 'walk', cells, trail = false } = ev.detail;

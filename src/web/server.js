@@ -168,8 +168,9 @@ class WebServer {
           }
           break;
         case 'scan': {
-          const radius = Number(msg.radius) || null;
-          this._scan(radius && Number.isInteger(radius) && radius <= MAX_SCAN_RADIUS ? radius : null);
+          const radius = Number(msg.radius);
+          this._scan(Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS
+            ? radius : this.settings.get('scan.radius'));
           break;
         }
         case 'settings':
@@ -242,10 +243,10 @@ class WebServer {
         return;
       }
       case 'scan': {
-        const radius = args[0] ? Number(args[0]) : null;
-        if (radius !== null && !(Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS)) {
-          say(`Usage: #scan (field of view) or #scan <radius 1-${MAX_SCAN_RADIUS}> for a cube around the agent, `
-            + 'e.g. #scan 2 for 5x5x5');
+        const radius = args[0] ? Number(args[0]) : this.settings.get('scan.radius');
+        if (!(Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS)) {
+          say(`Usage: #scan [radius 1-${MAX_SCAN_RADIUS}], a cube around the agent (2 = 5x5x5). `
+            + `Without a radius it uses the configured default (${this.settings.get('scan.radius')}).`);
           return;
         }
         this._scan(radius);
@@ -310,7 +311,8 @@ class WebServer {
       case '':
         say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
           + '#probe [all] (run every read-only agent command and summarize what each returns), '
-          + '#scan [radius] (identify the blocks around the agent; radius 2 scans a 5x5x5 cube), '
+          + '#scan [radius] (identify the blocks around the agent; radius 2 scans a 5x5x5 cube; '
+          + 'without a radius, the configured default), '
           + '#inflight <n> (how many commands may be outstanding at once), '
           + '#pathfind <x y z | @p> (plan a route that stays next to blocks; ~ = relative to the agent), '
           + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=7] [retries=3] (plan and walk, '
