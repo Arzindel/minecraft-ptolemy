@@ -289,3 +289,4 @@ code, pre, input { font-family: var(--mono); }
 }
 
 .log .agent .text { color: var(--warn); }
+.log .event .text { color: #c89be0; }

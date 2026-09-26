@@ -57,6 +57,13 @@ class WebServer {
       this._broadcastStatus();
     });
     bridge.on('chat', ({ sender, message }) => this._addLog('chat', message, { sender }));
+    bridge.on('event', ({ name, body }) => {
+      if (name === 'PlayerMessage' || name === 'AgentCommand') return; // logged above/below
+      this._addLog('event', name || '(unnamed event)', { commandLine: name, body });
+    });
+    bridge.on('raw', ({ purpose, body }) => {
+      this._addLog('system', `Unmatched message from Minecraft (${purpose || 'no purpose'})`, { body });
+    });
     bridge.on('agent', ({ commandName, result, body }) => {
       this._addLog('agent', summarizeAgentResult(commandName, result), { commandLine: commandName, body });
     });
@@ -99,7 +106,11 @@ class WebServer {
 
       switch (msg.type) {
         case 'command':
-          this.bridge.sendCommand(msg.text);
+          if (String(msg.text || '').trim().startsWith('#')) {
+            this._runConsoleCommand(msg.text.trim().slice(1));
+          } else {
+            this.bridge.sendCommand(msg.text);
+          }
           break;
         case 'disconnect':
           this.bridge.disconnect();
@@ -112,6 +123,41 @@ class WebServer {
           break;
       }
     });
+  }
+
+  /**
+   * Commands for Ptolemy itself rather than the game, typed as `#name args` in the console.
+   */
+  _runConsoleCommand(text) {
+    const [name = '', ...args] = text.split(/\s+/);
+    const say = (line) => this._addLog('system', line);
+
+    switch (name.toLowerCase()) {
+      case 'subscribe':
+      case 'unsubscribe': {
+        if (!args.length) {
+          say(`Usage: #${name} <EventName> [EventName...]`);
+          return;
+        }
+        for (const eventName of args) {
+          if (name.toLowerCase() === 'subscribe') this.bridge.subscribe(eventName);
+          else this.bridge.unsubscribe(eventName);
+        }
+        say(`${name} ${args.join(', ')}`
+          + (this.bridge.connected ? '' : ' (will be sent when Minecraft connects)'));
+        return;
+      }
+      case 'subscriptions':
+        say(`Subscribed events: ${[...this.bridge.subscriptions].join(', ') || '(none)'}`);
+        return;
+      case 'help':
+      case '':
+        say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, #help. '
+          + 'Anything not starting with # is sent to Minecraft.');
+        return;
+      default:
+        say(`Unknown console command "#${name}". Try #help.`);
+    }
   }
 
   _addLog(kind, text, extra = {}) {
