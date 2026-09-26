@@ -160,6 +160,33 @@ class WebServer {
           + (this.bridge.connected ? '' : ' (will be sent when Minecraft connects)'));
         return;
       }
+      case 'cmdversion': {
+        const value = args.join(' ');
+        if (value) {
+          // "off" omits the field, a plain integer is sent as a number, anything else as a string.
+          this.bridge.commandVersion = value === 'off' ? null : /^\d+$/.test(value) ? Number(value) : value;
+        }
+        const current = this.bridge.commandVersion;
+        say(`Command requests are sent with body.version = ${current === null ? '(omitted)' : JSON.stringify(current)}`
+          + (value ? '' : '. Usage: #cmdversion <1 | 1.21.0 | off>'));
+        return;
+      }
+      case 'raw': {
+        const json = text.slice(name.length).trim();
+        let message;
+        try {
+          message = JSON.parse(json);
+        } catch (err) {
+          say(`Usage: #raw {"header":{...},"body":{...}}  (${err.message})`);
+          return;
+        }
+        if (this.bridge.sendRaw(message)) {
+          this._addLog('system', 'Sent raw message', { commandLine: 'Raw message sent', body: message });
+        } else {
+          say('Minecraft is not connected.');
+        }
+        return;
+      }
       case 'probe':
         this._probeAgent(args[0] === 'all');
         return;
@@ -169,7 +196,9 @@ class WebServer {
       case 'help':
       case '':
         say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
-          + '#probe [all] (run every read-only agent command and summarize what each returns), #help. '
+          + '#probe [all] (run every read-only agent command and summarize what each returns), '
+          + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
+          + '#raw <json> (send a hand-written WebSocket message), #help. '
           + 'Anything not starting with # is sent to Minecraft.');
         return;
       default:

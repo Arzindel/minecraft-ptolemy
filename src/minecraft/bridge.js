@@ -37,6 +37,9 @@ class MinecraftBridge extends EventEmitter {
     // Event subscriptions survive reconnects: they are re-sent every time the game connects.
     this.subscriptions = new Set(['PlayerMessage', 'AgentCommand']);
     this.subscribeRequests = new Map(); // requestId -> { purpose, eventName }
+    // body.version of command requests: the command syntax version. Other tools send a
+    // Minecraft version string (e.g. "1.21.0"); null leaves the field out entirely.
+    this.commandVersion = 1;
   }
 
   listen() {
@@ -90,6 +93,17 @@ class MinecraftBridge extends EventEmitter {
       this.queue.push({ requestId, commandLine: line, resolve });
       this._pump();
     });
+  }
+
+  /**
+   * Send a hand-written message as-is (for protocol experiments). A missing
+   * header.requestId is filled in; the reply shows up as an unmatched message.
+   */
+  sendRaw(message) {
+    if (!this.connected) return false;
+    message.header = { requestId: crypto.randomUUID(), ...(message.header || {}) };
+    this.socket.send(JSON.stringify(message));
+    return true;
   }
 
   subscribe(eventName) {
@@ -226,7 +240,9 @@ class MinecraftBridge extends EventEmitter {
       }, COMMAND_TIMEOUT_MS);
 
       this.pending.set(requestId, { commandLine, resolve, timer });
-      this._send('commandRequest', { commandLine, version: 1, origin: { type: 'player' } }, requestId);
+      const body = { commandLine, origin: { type: 'player' } };
+      if (this.commandVersion !== null) body.version = this.commandVersion;
+      this._send('commandRequest', body, requestId);
       this.emit('command', { id: requestId, commandLine });
     }
   }
