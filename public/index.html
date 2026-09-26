@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ptolemy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Ptolemy</span>
+    </div>
+
+    <div class="header-connection">
+      <div class="status" id="mc-status" data-state="waiting">
+        <span class="status-dot"></span>
+        <span class="status-text" id="mc-status-text">Waiting for Minecraft</span>
+      </div>
+
+      <div class="connect-hint" id="connect-hint">
+        <span class="connect-label">In game, run</span>
+        <code id="connect-command">/connect localhost:8080</code>
+        <button class="btn btn-ghost btn-small" id="copy-connect" type="button">Copy</button>
+      </div>
+
+      <button class="btn btn-ghost btn-small" id="disconnect-btn" type="button" hidden>Disconnect</button>
+    </div>
+
+    <div class="status status-ui" id="ui-status" data-state="waiting" title="Link between this page and the Ptolemy server">
+      <span class="status-dot"></span>
+      <span class="status-text" id="ui-status-text">Server</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="dashboard">
+      <nav class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="automatic" aria-selected="false">Automatic</button>
+        <button class="tab" role="tab" data-tab="manual" aria-selected="true">Manual</button>
+      </nav>
+
+      <div class="tab-panel" data-panel="automatic" hidden>
+        <div class="placeholder">
+          <h2>Automatic mode</h2>
+          <p>
+            This is where an LLM (NVIDIA Build, text-generation-webui or LM Studio) will drive the agent
+            from instructions typed here or sent through in-game chat.
+          </p>
+          <p class="muted">Not wired up yet. Use Manual mode for now.</p>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="manual">
+        <div class="console">
+          <div class="console-toolbar">
+            <span class="console-title">Console</span>
+            <label class="toggle">
+              <input type="checkbox" id="show-chat" checked> Show chat
+            </label>
+            <button class="btn btn-ghost btn-small" id="clear-log" type="button">Clear</button>
+          </div>
+          <ol class="log" id="log" aria-live="polite"></ol>
+          <form class="command-form" id="command-form" autocomplete="off">
+            <span class="prompt" aria-hidden="true">/</span>
+            <input type="text" id="command-input" placeholder="agent move forward" spellcheck="false">
+            <button class="btn btn-primary" type="submit">Run</button>
+          </form>
+          <p class="hint">Enter to run, ↑ / ↓ for history. The leading slash is optional.</p>
+        </div>
+      </div>
+    </section>
+
+    <aside class="info-panel">
+      <h2 class="panel-title">Information</h2>
+
+      <dl class="facts">
+        <dt>Minecraft</dt><dd id="info-connected">Not connected</dd>
+        <dt>Player</dt><dd id="info-player">–</dd>
+        <dt>From</dt><dd id="info-remote">–</dd>
+        <dt>Connected for</dt><dd id="info-uptime">–</dd>
+        <dt>In flight</dt><dd id="info-pending">0</dd>
+      </dl>
+
+      <h3 class="panel-subtitle">Selected response</h3>
+      <p class="muted small" id="inspect-caption">Click a line in the console to inspect the raw response.</p>
+      <pre class="inspect" id="inspect"></pre>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
