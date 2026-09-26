@@ -23,9 +23,9 @@ If you need to place blocks, use the slot the player tells you about (slot 1 if 
 - The player's reported position is roughly their head; their feet are a block lower.`,
   relative ? `# Coordinates: your own point of view
 Every coordinate you see and give is x y z relative to the robot:
-- x = right (+) / left (-), y = up (+) / down (-), z = ahead (+) / behind (-).
-- 0 0 0 is the robot itself. 0 0 1 is the block in front of it, 0 0 -1 behind it, 1 0 0 on its right, \
--1 0 0 on its left, 0 1 0 above, 0 -1 0 below. 3 0 5 is 5 ahead and 3 to the right.
+- x = left (+) / right (-), y = up (+) / down (-), z = ahead (+) / behind (-).
+- 0 0 0 is the robot itself. 0 0 1 is the block in front of it, 0 0 -1 behind it, 1 0 0 on its left, \
+-1 0 0 on its right, 0 1 0 above, 0 -1 0 below. 3 0 5 is 5 ahead and 3 to the left; -3 0 5 is 5 ahead and 3 to the right.
 - The coordinates move and turn with the robot. After any move, turn or go_to, coordinates you saw before are out of date: \
 use the ones in the newest tool result or [Now] block.
 - To remember a place, save it as a named area (add_area) while you know where it is: areas are stored in world terms and \

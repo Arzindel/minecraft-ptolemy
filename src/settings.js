@@ -33,7 +33,7 @@ const SCHEMA = [
           + 'silence, not the whole answer. Turned off automatically for a server that refuses it.' },
       { key: 'llm.coordinates', label: 'Coordinates the model sees', type: 'select', default: 'relative',
         options: [{ value: 'relative', label: 'Relative' }, { value: 'world', label: 'World' }],
-        help: 'Relative: the robot is always at 0 0 0, 0 0 1 is ahead, 0 1 0 above, 1 0 0 on its right; everything moves '
+        help: 'Relative: the robot is always at 0 0 0, 0 0 1 is ahead, 0 1 0 above, 1 0 0 on its left; everything moves '
           + 'and turns with it. World: real Minecraft coordinates and compass directions. Applies to MCP clients too.' },
       { key: 'llm.temperature', label: 'Temperature', default: 0.3, min: 0, max: 2, step: 0.05,
         help: 'Ignored automatically by models that don\'t accept it.' },

@@ -635,7 +635,7 @@ function summarizeScan(scan, mode = 'world') {
   const frame = new Frame({ x: ax, y: ay, z: az, facing }, mode);
   const at = new Map(scan.cells.map((c) => [`${c.x},${c.y},${c.z}`, c.block]));
   const lines = [frame.relative
-    ? `Scanned ${scan.cells.length} blocks around you (you are at 0 0 0; x = right, y = up, z = ahead).`
+    ? `Scanned ${scan.cells.length} blocks around you (you are at 0 0 0; x = left, y = up, z = ahead).`
     : `Scanned ${scan.cells.length} blocks around the robot at ${ax} ${ay} ${az}, facing ${compassName(facing)} `
       + `(${orientationText(facing)}).`];
 

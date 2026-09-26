@@ -1,14 +1,21 @@
 'use strict';
 
-const { FORWARD, turnRight } = require('./pose');
+const { FORWARD, turnLeft } = require('./pose');
 
 const COMPASS_NAMES = ['south', 'west', 'north', 'east'];
 
 /**
  * The coordinates the LLM sees. In the relative frame the robot is always at 0 0 0 and the axes
- * turn with it: x = its right, y = up, z = ahead. So 0 0 1 is the block in front of it, 0 1 0 the
- * one above, -1 0 0 the one on its left, whatever way it faces in the world. In the world frame,
+ * turn with it: x = its left, y = up, z = ahead. So 0 0 1 is the block in front of it, 0 1 0 the
+ * one above, 1 0 0 the one on its left, whatever way it faces in the world. In the world frame,
  * coordinates are Minecraft's own.
+ *
+ * x is left rather than right so that at y-rot 0 (facing Z+) the frame lines up with the world's
+ * axes: relative = world - robot. The other facings are that, rotated:
+ *   y-rot 0    (facing Z+):  x =  dX, z =  dZ
+ *   y-rot 90   (facing X-):  x =  dZ, z = -dX
+ *   y-rot ±180 (facing Z-):  x = -dX, z = -dZ
+ *   y-rot -90  (facing X+):  x = -dZ, z =  dX
  *
  * Everything stored (areas, paths) stays in world coordinates; a Frame converts at the edge,
  * using the robot's pose at that moment.
@@ -22,9 +29,9 @@ class Frame {
     this.pose = pose;
     this.relative = mode === 'relative';
     const [fx, , fz] = FORWARD[pose.facing];
-    const [rx, , rz] = FORWARD[turnRight(pose.facing)];
-    this.f = [fx, fz];
-    this.r = [rx, rz];
+    const [lx, , lz] = FORWARD[turnLeft(pose.facing)];
+    this.f = [fx, fz]; // world direction of relative z (ahead)
+    this.l = [lx, lz]; // world direction of relative x (left)
   }
 
   /** World coordinates to this frame's. */
@@ -32,16 +39,16 @@ class Frame {
     if (!this.relative) return [x, y, z];
     const dx = x - this.pose.x;
     const dz = z - this.pose.z;
-    return [dx * this.r[0] + dz * this.r[1], y - this.pose.y, dx * this.f[0] + dz * this.f[1]];
+    return [dx * this.l[0] + dz * this.l[1], y - this.pose.y, dx * this.f[0] + dz * this.f[1]];
   }
 
   /** This frame's coordinates to world coordinates. */
   to(a, b, c) {
     if (!this.relative) return [a, b, c];
     return [
-      this.pose.x + a * this.r[0] + c * this.f[0],
+      this.pose.x + a * this.l[0] + c * this.f[0],
       this.pose.y + b,
-      this.pose.z + a * this.r[1] + c * this.f[1],
+      this.pose.z + a * this.l[1] + c * this.f[1],
     ];
   }
 

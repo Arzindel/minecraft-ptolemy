@@ -242,10 +242,14 @@ refuses streaming is switched to normal replies automatically.
 
 **Coordinates the model sees** decides how positions are shown to the model:
 
-- **Relative (the default):** the robot is always at `0 0 0`. `x` is its right, `y` is up, and `z` is
+- **Relative (the default):** the robot is always at `0 0 0`. `x` is its left, `y` is up, and `z` is
   ahead:
   - `0 0 1` is the block in front of it, `0 0 -1` the one behind.
-  - `1 0 0` is on its right, `-1 0 0` on its left.
+  - `1 0 0` is on its left, `-1 0 0` on its right.
+  - Left is positive so that facing south (y-rot 0) the frame matches the world's axes: relative =
+    world − robot. Facing north (±180) it's (−x, −z). Facing west (90), world X becomes relative −z and
+    world Z becomes relative x. Facing east (−90), world X becomes relative z and world Z becomes
+    relative −x.
   - `0 1 0` is above, `0 -1 0` below.
   - Everything moves and turns with the robot, so the model never deals with compass directions or
     world coordinates.
