@@ -93,6 +93,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | --- | --- |
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
+| `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#subscriptions` | List the current subscriptions, which are re-sent whenever Minecraft reconnects |
 | `#help` | Show this list |
 

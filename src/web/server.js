@@ -160,17 +160,58 @@ class WebServer {
           + (this.bridge.connected ? '' : ' (will be sent when Minecraft connects)'));
         return;
       }
+      case 'probe':
+        this._probeAgent(args[0] === 'all');
+        return;
       case 'subscriptions':
         say(`Subscribed events: ${[...this.bridge.subscriptions].join(', ') || '(none)'}`);
         return;
       case 'help':
       case '':
-        say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, #help. '
+        say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
+          + '#probe [all] (run every read-only agent command and summarize what each returns), #help. '
           + 'Anything not starting with # is sent to Minecraft.');
         return;
       default:
         say(`Unknown console command "#${name}". Try #help.`);
     }
+  }
+
+  /**
+   * Runs every read-only agent command once and reports which fields each response carries
+   * beyond statusCode/statusMessage, to map out what the agent can actually sense.
+   */
+  async _probeAgent(allSlots) {
+    if (!this.bridge.connected) {
+      this._addLog('system', 'Probe needs Minecraft to be connected.');
+      return;
+    }
+
+    const directions = ['forward', 'back', 'left', 'right', 'up', 'down'];
+    const slots = allSlots ? Array.from({ length: 27 }, (_, i) => i + 1) : [1];
+    const commands = [
+      'agent getposition',
+      ...['detect', 'detectredstone', 'inspect', 'inspectdata']
+        .flatMap((sub) => directions.map((dir) => `agent ${sub} ${dir}`)),
+      ...['getitemcount', 'getitemdetail', 'getitemspace']
+        .flatMap((sub) => slots.map((slot) => `agent ${sub} ${slot}`)),
+    ];
+
+    this._addLog('system', `Probing ${commands.length} agent commands...`);
+
+    // One at a time, so the results line up with what the agent was doing.
+    const results = {};
+    const lines = [];
+    for (const command of commands) {
+      const res = await this.bridge.sendCommand(command);
+      const { statusCode, statusMessage, ...data } = res.body || {};
+      results[command] = res.body || { statusCode: res.statusCode, statusMessage: res.statusMessage };
+      const fields = Object.keys(data);
+      lines.push(`${res.ok ? '✓' : '✗'} ${command}  →  `
+        + (fields.length ? fields.map((k) => `${k}=${JSON.stringify(data[k])}`).join('  ') : `(no data) "${res.statusMessage}"`));
+    }
+
+    this._addLog('system', `Probe results:\n${lines.join('\n')}`, { commandLine: 'Probe results', body: results });
   }
 
   _addLog(kind, text, extra = {}) {
