@@ -136,6 +136,12 @@ Information panel.
 | `PTOLEMY_KEY_<ENDPOINT>` | | Where each endpoint's saved key lives, in `.env` (e.g. `PTOLEMY_KEY_NVIDIA`) |
 | `PTOLEMY_MCP_URL` | `http://localhost:$PTOLEMY_UI_PORT/mcp` | Where `npm run mcp` relays to |
 
+If those ports are already taken (for example by another Ptolemy), both move up together: the second
+instance uses 3001 and 8081, the third 3002 and 8082, and so on. The console, and the connect hint in the
+WebUI header, show which ones it got. Instances share the `data/` folder, so settings and world memory
+changed in one can be overwritten by another. `npm run mcp` relays to port 3000 unless you set
+`PTOLEMY_UI_PORT` or `PTOLEMY_MCP_URL`.
+
 Ptolemy reads a `.env` file in the project folder at start-up (it's git-ignored). API keys typed into
 Configuration → LLM are saved there.
 
@@ -216,8 +222,50 @@ calling a tool. Every tool call shows up in the transcript (click one to see the
 the Manual console as `LLM → tool {...}`. **Stop** stops the model and the robot; **New conversation**
 makes it forget everything said so far.
 
-Each request starts with the robot's and player's positions attached (and the named areas they're in),
-and the system prompt carries the world's memory, so the model rarely has to ask.
+### What the model is sent
+
+- **The system prompt stays the same from call to call.** It only changes when you change the settings
+  or the tools. Servers that cache the start of a prompt (LM Studio, llama.cpp, Anthropic) can then
+  skip re-reading it, which is where most of the time goes with long prompts.
+- **A fresh `[Now]` block** is added to the newest message on every call. It says where the robot and
+  the player are, the world's memory, and where the request came from. It's left out of older
+  messages, so the model sees one current copy, not a pile of outdated ones.
+- **Only the newest snapshot of each kind** (`scan`, `get_status`, `get_memory`, `todo_write`) is sent
+  in full. Older ones are replaced by a one-line note.
+- **One exception, for Anthropic:** within the request being worked on, the conversation is sent
+  unchanged, older `[Now]` blocks included. Anthropic requires the history before its thinking blocks
+  to stay exactly as it was, and its prompt caching makes the repeats cheap. Earlier requests are
+  pruned as usual.
+
+### Streaming
+
+With **Stream replies** on (the default), the model's thinking and answer appear in the transcript as
+they're written. The thinking stays open while it streams, then collapses. The timeout then counts
+seconds of silence instead of the whole answer, so a slow but steady model isn't cut off. A server that
+refuses streaming is switched to normal replies automatically.
+
+### Coordinates
+
+**Coordinates the model sees** decides how positions are shown to the model:
+
+- **Relative (the default):** the robot is always at `0 0 0`. `x` is its left, `y` is up, and `z` is
+  ahead:
+  - `0 0 1` is the block in front of it, `0 0 -1` the one behind.
+  - `1 0 0` is on its left, `-1 0 0` on its right.
+  - Left is positive so that facing south (y-rot 0) the frame matches the world's axes: relative =
+    world − robot. Facing north (±180) it's (−x, −z). Facing west (90), world X becomes relative −z and
+    world Z becomes relative x. Facing east (−90), world X becomes relative z and world Z becomes
+    relative −x.
+  - `0 1 0` is above, `0 -1 0` below.
+  - Everything moves and turns with the robot, so the model never deals with compass directions or
+    world coordinates.
+  - Tools take and return coordinates in this frame, and after a move or turn they remind the model
+    that it's at `0 0 0` again.
+  - Areas are still stored in world coordinates and shown in the current frame, so they stay put.
+  - Only `run_command` uses world coordinates. `get_status` gives the world position for that.
+- **World:** real Minecraft coordinates and compass directions, as before.
+
+The setting applies to MCP clients too.
 
 **Where replies go.** What the model says while it works (its "default replies") goes back to wherever
 the request came from: a request typed in the WebUI is answered in the WebUI, and a request from the
@@ -262,6 +310,7 @@ Each card has:
     the model wrote the call as plain text (use Text mode), ignored the tool, or the server refused it.
 
 The other LLM settings:
+- Stream replies, and the coordinates the model sees (see above).
 - Temperature. It's dropped automatically for models that refuse it.
 - Max tokens per reply. Keep it generous for reasoning models, whose `<think>` output shows collapsed
   as *Thinking*. Anthropic models always get at least 16,000.
@@ -473,12 +522,13 @@ src/
   web/server.js          static file server, WebUI socket, console commands
   web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
   settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
-  agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator)
+  agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator),
+                         and frame.js: the robot-relative coordinates the model sees
   world/manager.js       which world is open (the scoreboard marker), per-world folders
   world/memory.js        World Memory: areas, todos, thoughts, notes, journal, conversation
   tools/index.js         the robot's tools, shared by the LLM and MCP
   llm/endpoints.js       endpoint presets and store (data/endpoints.json, keys in .env)
-  llm/client.js          chat client for OpenAI-compatible servers and Anthropic (built-in fetch)
+  llm/client.js          chat client for OpenAI-compatible servers and Anthropic, with streaming (built-in fetch)
   llm/tests.js           the Test endpoint / model / tools buttons
   llm/prompts.js         system prompt, text-mode tool calls
   llm/pilot.js           the Automatic mode loop and conversation

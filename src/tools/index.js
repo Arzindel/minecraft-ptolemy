@@ -2,6 +2,7 @@
 
 const { FORWARD, turnLeft, turnRight, getAgentPose } = require('../agent/pose');
 const { isSolid } = require('../../public/blocks');
+const { Frame } = require('../agent/frame');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
 // game commands and report what actually happened, since the game's own replies say "success"
@@ -76,6 +77,26 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   const tools = [];
   const add = (tool) => tools.push(tool);
 
+  /** The coordinate frame the model works in, at the robot's current pose. */
+  async function frameNow(pose) {
+    return new Frame(pose || await getAgentPose(bridge), settings.get('llm.coordinates'));
+  }
+
+  /** Where the player is, in the frame, for results after the robot moved. */
+  async function playerLine(frame) {
+    const p = await playerPosition();
+    if (!p) return '';
+    const where = worlds.current && (worlds.current.describeAreasAt(p.x, p.y, p.z) || worlds.current.describeAreasAt(p.x, p.y - 1, p.z));
+    return ` The player is at ${frame.fmt(p.x, p.y, p.z)}${where ? ` (in ${where})` : ''}.`;
+  }
+
+  /** How the robot's pose reads to the model after a move or turn. */
+  function afterMove(frame) {
+    return frame.relative
+      ? 'You are at 0 0 0 again: coordinates are now measured from your new position and facing.'
+      : `The robot is at ${poseText(frame.pose)}.`;
+  }
+
   async function blockAt(x, y, z) {
     const res = await bridge.sendCommand(`testforblock ${x} ${y} ${z} air`, { quiet: true });
     if (res.body && res.body.matches === true) return 'Air';
@@ -103,7 +124,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     const res = await bridge.sendCommand(`agent ${verb} ${extra}${direction}`.replace(/\s+/g, ' '));
     const after = await blockAt(x, y, z);
     world.setBlock(x, y, z, after);
-    const where = `${direction} of the robot (${x} ${y} ${z})`;
+    const frame = await frameNow(pose);
+    const where = `${direction} of the robot (${frame.fmt(x, y, z)})`;
     const game = `The game said: "${res.statusMessage}".`;
     if (before === after) return `Nothing changed ${where}: it is still ${after}. ${game}`;
     return `The block ${where} went from ${before} to ${after}. ${game}`;
@@ -120,24 +142,25 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       lines.push(`Minecraft: connected as ${bridge.player || 'unknown player'}`
         + `${worlds.current ? `, in the world "${worlds.current.name}"` : ''}.`);
       const pose = await getAgentPose(bridge);
+      const frame = await frameNow(pose);
       const where = (p) => (worlds.current && worlds.current.describeAreasAt(p.x, p.y, p.z)) || null;
-      lines.push(`Robot: at ${poseText(pose)}${where(pose) ? `, in ${where(pose)}` : ''}. `
-        + `Relative directions: ${orientationText(pose.facing)}.`);
+      lines.push(`Robot: at ${frame.here()}${where(pose) ? `, in ${where(pose)}` : ''}.`
+        + (frame.relative ? '' : ` Relative directions: ${orientationText(pose.facing)}.`));
       const around = await Promise.all(DIRECTIONS.map(async (d) => {
         const [dx, dy, dz] = offsetOf(d, pose.facing);
-        return `${d}: ${await blockAt(pose.x + dx, pose.y + dy, pose.z + dz)}`;
+        return `${d}${frame.relative ? ` (${frame.fmt(pose.x + dx, pose.y + dy, pose.z + dz)})` : ''}: ${await blockAt(pose.x + dx, pose.y + dy, pose.z + dz)}`;
       }));
       lines.push(`Next to the robot: ${around.join(', ')}.`);
       const player = await playerPosition();
       if (player) {
         const dist = Math.hypot(player.x - pose.x, player.y - pose.y, player.z - pose.z);
-        lines.push(`Player ${bridge.player || ''}: at ${player.x} ${player.y} ${player.z} (roughly; this may be eye height), `
+        lines.push(`Player ${bridge.player || ''}: at ${frame.fmt(player.x, player.y, player.z)} (roughly; this may be eye height), `
           + `${dist.toFixed(1)} blocks from the robot${where(player) ? `, in ${where(player)}` : ''}.`);
       }
       const s = sight();
       if (s) {
-        lines.push(`Last scan: ${s.scanned} blocks around ${s.agent.position.x} ${s.agent.position.y} ${s.agent.position.z}, `
-          + `${Math.round((Date.now() - s.time) / 1000)}s ago.`);
+        const c = s.agent.position;
+        lines.push(`Last scan: ${s.scanned} blocks around ${frame.fmt(c.x, c.y, c.z)}, ${Math.round((Date.now() - s.time) / 1000)}s ago.`);
       }
       if (navigator.busy) lines.push('The robot is busy walking a path right now.');
       return lines.join('\n');
@@ -146,7 +169,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'scan',
-    description: 'Look at every block in a cube around the robot (radius 3 = 7x7x7, about 0.3s; radius 8 = 17x17x17, about 5s). '
+    description: 'Look at every block in a cube around the robot (radius 3 = 7x7x7, about 0.3s; radius 8 = 17x17x17, about 5s; '
+      + 'a bigger scan means a longer result, so start small). '
       + 'Returns what is next to the robot, the ground below it, counts of each block type, and the coordinates of the rarer blocks. '
       + 'Also updates the robot\'s map for go_to.',
     parameters: {
@@ -159,13 +183,14 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       const r = clampInt(radius ?? settings.get('scan.radius'), 1, MAX_SCAN_RADIUS);
       const result = await scan(r, { quiet: true });
       if (!result) throw new Error('the scan failed (see the console)');
-      return summarizeScan(result);
+      return summarizeScan(result, settings.get('llm.coordinates'));
     },
   });
 
   add({
     name: 'get_blocks',
-    description: `Which block is at each of up to ${MAX_BLOCKS_QUERY} exact coordinates (works anywhere loaded, not only near the robot).`,
+    description: `Which block is at each of up to ${MAX_BLOCKS_QUERY} exact coordinates, e.g. 0 -1 0 for the block under the robot `
+      + '(works anywhere loaded, not only near the robot).',
     parameters: {
       type: 'object',
       properties: {
@@ -185,7 +210,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       if (!Array.isArray(positions) || !positions.length) throw new Error('positions must be a non-empty list of {x, y, z}');
       const list = positions.slice(0, MAX_BLOCKS_QUERY).map((p) => [p.x, p.y, p.z].map((v) => Math.round(Number(v))));
       if (list.some((p) => p.some((v) => !Number.isFinite(v)))) throw new Error('every position needs numeric x, y and z');
-      const blocks = await Promise.all(list.map((p) => blockAt(...p)));
+      const frame = await frameNow();
+      const blocks = await Promise.all(list.map((p) => blockAt(...frame.to(...p))));
       return list.map((p, i) => `${p.join(' ')}: ${blocks[i]}`).join('\n');
     },
   });
@@ -214,20 +240,22 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         return { action: direction, command: `agent move ${direction}`, expect, enters: [expect.x, expect.y, expect.z] };
       });
       const result = await navigator.runSteps(steps);
-      if (result.ok) return `Moved ${n} ${direction}. The robot is at ${poseText(result.pose)}.`;
-      if (result.stopped) return `Stopped by the user after ${countMoved(start, result.pose)} blocks, at ${poseText(result.pose)}.`;
-      if (!result.step) return `Couldn't move: ${result.reason}.`;
+      if (!result.pose) return `Couldn't move: ${result.reason}.`;
+      const frame = await frameNow(result.pose);
       const moved = countMoved(start, result.pose);
+      if (result.ok) return `Moved ${n} ${direction}. ${afterMove(frame)}${await playerLine(frame)}`;
+      if (result.stopped) return `Stopped by the user after ${moved} blocks. ${afterMove(frame)}`;
+      if (!result.step) return `Couldn't move: ${result.reason}.`;
       const blocker = await blockAt(...result.step.enters);
       if (isSolid(blocker)) world.markBlocked(...result.step.enters);
-      return `Moved ${moved} of ${n} blocks ${direction}, then was blocked by ${blocker} at ${result.step.enters.join(' ')}. `
-        + `The robot is at ${poseText(result.pose)}.`;
+      return `Moved ${moved} of ${n} blocks ${direction}, then was blocked by ${blocker} (now at ${frame.fmt(...result.step.enters)}). `
+        + `${afterMove(frame)}${await playerLine(frame)}`;
     },
   });
 
   add({
     name: 'turn',
-    description: 'Turn the robot left, right or around, or to face a compass direction (north = Z-, south = Z+, east = X+, west = X-).',
+    description: 'Turn the robot left, right or around (or to face a compass direction: north = world Z-, south = Z+, east = X+, west = X-).',
     parameters: {
       type: 'object',
       properties: { to: { type: 'string', enum: ['left', 'right', 'around', 'north', 'south', 'east', 'west'] } },
@@ -243,7 +271,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         const diff = (COMPASS[to] - start.facing + 4) % 4;
         turns = [[], ['right'], ['right', 'right'], ['left']][diff];
       } else throw new Error(`"to" must be left, right, around, north, south, east or west`);
-      if (!turns.length) return `Already facing ${to}. ${orientationText(start.facing)}.`;
+      if (!turns.length) return `Already facing ${to}.`;
       let facing = start.facing;
       const steps = turns.map((t) => {
         facing = t === 'right' ? turnRight(facing) : turnLeft(facing);
@@ -251,6 +279,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       });
       const result = await navigator.runSteps(steps);
       if (!result.ok) return `Turn failed: ${result.reason || 'stopped'}.`;
+      const frame = await frameNow(result.pose);
+      if (frame.relative) return `Turned ${to} (now facing ${compassName(result.pose.facing)}). ${afterMove(frame)}${await playerLine(frame)}`;
       return `Now facing ${compassName(result.pose.facing)}. ${orientationText(result.pose.facing)}.`;
     },
   });
@@ -278,11 +308,13 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         args = [Math.floor((a.min[0] + a.max[0]) / 2), a.min[1], Math.floor((a.min[2] + a.max[2]) / 2)].map(String);
       } else {
         if (![x, y, z].every((v) => Number.isFinite(Number(v)))) throw new Error('give x, y and z, or target "player"');
-        args = [x, y, z].map((v) => String(Math.round(Number(v))));
+        const frame = await frameNow();
+        args = frame.to(...[x, y, z].map((v) => Math.round(Number(v)))).map(String);
       }
       const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly) }));
-      const pose = await getAgentPose(bridge);
-      return `${lines.join('\n')}\nThe robot is now at ${poseText(pose)}.`;
+      const frame = await frameNow();
+      // The pathfinder talks in world coordinates: put them in the model's frame, as seen from where the robot ended up.
+      return `${lines.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;
     },
   });
 
@@ -294,7 +326,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       const res = await bridge.sendCommand('agent tp');
       const pose = await getAgentPose(bridge);
       navigator.agentMoved(pose);
-      return `The game said: "${res.statusMessage}". The robot is at ${poseText(pose)}.`;
+      const frame = await frameNow(pose);
+      return `The game said: "${res.statusMessage}". ${afterMove(frame)}${await playerLine(frame)}`;
     },
   });
 
@@ -404,13 +437,13 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     offline: true,
     parameters: { type: 'object', properties: {} },
     async run() {
-      return memory().promptBlock();
+      return memory().promptBlock(await frameNow());
     },
   });
 
   add({
     name: 'add_area',
-    description: 'Remember a named area (a box between two corners), e.g. "house" or "kitchen". An area inside another '
+    description: 'Remember a named area (a box between two opposite corners, in your current coordinates), e.g. "house" or "kitchen". An area inside another '
       + 'is understood as part of it. Reusing a name moves that area. Give one corner for a single spot (e.g. "chest").',
     offline: true,
     parameters: {
@@ -425,9 +458,13 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     },
     async run({ name, x1, y1, z1, x2, y2, z2, note }) {
       const corner2 = [x2, y2, z2].every((v) => v !== undefined && v !== null) ? [x2, y2, z2] : [x1, y1, z1];
-      const a = memory().setArea(name, [x1, y1, z1], corner2, note);
+      const frame = await frameNow();
+      const num = (c) => c.map((v) => Math.round(Number(v)));
+      const a = memory().setArea(name, frame.to(...num([x1, y1, z1])), frame.to(...num(corner2)), note);
       const parent = memory().parentOf(a);
-      return `Saved area "${a.name}": ${a.min.join(' ')} to ${a.max.join(' ')}${parent ? `, inside "${parent.name}"` : ''}.`;
+      const box = frame.box(a.min, a.max);
+      return `Saved area "${a.name}": ${box.min.join(' ')} to ${box.max.join(' ')}${parent ? `, inside "${parent.name}"` : ''}. `
+        + 'It is stored in world terms, so it stays put as you move.';
     },
   });
 
@@ -592,12 +629,15 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 }
 
 /** A scan, told the way a model can use it. */
-function summarizeScan(scan) {
+function summarizeScan(scan, mode = 'world') {
   const { x: ax, y: ay, z: az } = scan.agent.position;
   const facing = ((Math.round(scan.agent.yRot / 90) % 4) + 4) % 4;
+  const frame = new Frame({ x: ax, y: ay, z: az, facing }, mode);
   const at = new Map(scan.cells.map((c) => [`${c.x},${c.y},${c.z}`, c.block]));
-  const lines = [`Scanned ${scan.cells.length} blocks around the robot at ${ax} ${ay} ${az}, facing ${compassName(facing)} `
-    + `(${orientationText(facing)}).`];
+  const lines = [frame.relative
+    ? `Scanned ${scan.cells.length} blocks around you (you are at 0 0 0; x = left, y = up, z = ahead).`
+    : `Scanned ${scan.cells.length} blocks around the robot at ${ax} ${ay} ${az}, facing ${compassName(facing)} `
+      + `(${orientationText(facing)}).`];
 
   lines.push(`Next to the robot: ${DIRECTIONS.map((d) => {
     const [dx, dy, dz] = offsetOf(d, facing);
@@ -611,7 +651,7 @@ function summarizeScan(scan) {
       break;
     }
   }
-  lines.push(ground ? `Ground below: ${ground.block} at y ${ground.y} (${ay - ground.y - 1} blocks of space under the robot).`
+  lines.push(ground ? `Ground below: ${ground.block} at y ${frame.relative ? ground.y - ay : ground.y} (${ay - ground.y - 1} blocks of space under the robot).`
     : 'No ground found below the robot within the scan.');
 
   const byType = new Map();
@@ -630,7 +670,7 @@ function summarizeScan(scan) {
     lines.push('Where the less common blocks are (nearest first):');
     for (const [name, cells] of rare.reverse()) {
       const nearest = [...cells].sort((a, b) => dist(a) - dist(b)).slice(0, LIST_LIMIT_PER_TYPE);
-      lines.push(`  ${name}: ${nearest.map((c) => `${c.x} ${c.y} ${c.z}`).join('; ')}${cells.length > nearest.length ? ` (+${cells.length - nearest.length} more)` : ''}`);
+      lines.push(`  ${name}: ${nearest.map((c) => frame.fmt(c.x, c.y, c.z)).join('; ')}${cells.length > nearest.length ? ` (+${cells.length - nearest.length} more)` : ''}`);
     }
   }
 
@@ -648,7 +688,7 @@ function summarizeScan(scan) {
         const block = at.get(`${cx},${y},${cz}`);
         if (block && isSolid(block)) { top = y; break; }
       }
-      tops.push(`${d} ${k}: ${top === null ? 'no ground' : `ground at y ${top}`}`);
+      tops.push(`${d} ${k}: ${top === null ? 'no ground' : `ground at y ${frame.relative ? top - ay : top}`}`);
     }
   }
   lines.push(`Ground height around: ${tops.join(', ')}.`);

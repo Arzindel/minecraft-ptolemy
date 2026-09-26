@@ -28,13 +28,21 @@ const SCHEMA = [
     group: 'Model behaviour',
     help: 'How the Automatic mode uses whichever endpoint is active above.',
     fields: [
+      { key: 'llm.stream', label: 'Stream replies', type: 'boolean', default: true,
+        help: 'Show the model\'s thinking and answer as they are written instead of all at once. The timeout then counts '
+          + 'silence, not the whole answer. Turned off automatically for a server that refuses it.' },
+      { key: 'llm.coordinates', label: 'Coordinates the model sees', type: 'select', default: 'relative',
+        options: [{ value: 'relative', label: 'Relative' }, { value: 'world', label: 'World' }],
+        help: 'Relative: the robot is always at 0 0 0, 0 0 1 is ahead, 0 1 0 above, 1 0 0 on its left; everything moves '
+          + 'and turns with it. World: real Minecraft coordinates and compass directions. Applies to MCP clients too.' },
       { key: 'llm.temperature', label: 'Temperature', default: 0.3, min: 0, max: 2, step: 0.05,
         help: 'Ignored automatically by models that don\'t accept it.' },
       { key: 'llm.maxTokens', label: 'Max tokens per reply', default: 4096, min: 64, max: 65536, step: 64,
         help: 'Reasoning models spend tokens thinking before they act, so don\'t set this too low. Anthropic models always get at least 16000.' },
       { key: 'llm.maxSteps', label: 'Max model calls per request', default: 25, min: 1, max: 200, step: 1,
         help: 'A request stops after this many round trips to the model, even if it isn\'t finished.' },
-      { key: 'llm.timeout', label: 'Model timeout (seconds)', default: 180, min: 5, max: 1800, step: 5 },
+      { key: 'llm.timeout', label: 'Model timeout (seconds)', default: 180, min: 5, max: 1800, step: 5,
+        help: 'While streaming, this counts seconds without any new text, not the whole answer.' },
       { key: 'llm.historyChars', label: 'Conversation budget (characters)', default: 16000, min: 2000, max: 400000, step: 1000,
         help: 'Older requests are dropped (and their tool results shortened) to keep the conversation under this size. '
           + 'About 4 characters per token: lower it for models with a small context window.' },
