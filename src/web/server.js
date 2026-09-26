@@ -5,6 +5,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
+const { scanAroundAgent, formatScan } = require('../agent/scan');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const SRC_DIR = path.join(__dirname, '..');
@@ -187,6 +188,9 @@ class WebServer {
         }
         return;
       }
+      case 'scan':
+        this._scan();
+        return;
       case 'probe':
         this._probeAgent(args[0] === 'all');
         return;
@@ -197,12 +201,27 @@ class WebServer {
       case '':
         say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
           + '#probe [all] (run every read-only agent command and summarize what each returns), '
+          + '#scan (identify the blocks around the agent), '
           + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
           + '#raw <json> (send a hand-written WebSocket message), #help. '
           + 'Anything not starting with # is sent to Minecraft.');
         return;
       default:
         say(`Unknown console command "#${name}". Try #help.`);
+    }
+  }
+
+  async _scan() {
+    if (!this.bridge.connected) {
+      this._addLog('system', 'Scan needs Minecraft to be connected.');
+      return;
+    }
+    this._addLog('system', 'Scanning around the agent...');
+    try {
+      const scan = await scanAroundAgent(this.bridge);
+      this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
+    } catch (err) {
+      this._addLog('system', `Scan failed: ${err.message}`);
     }
   }
 

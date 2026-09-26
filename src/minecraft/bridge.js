@@ -77,20 +77,21 @@ class MinecraftBridge extends EventEmitter {
   /**
    * Send a command to the game. Resolves (never rejects) with the parsed response,
    * so callers can treat failures, timeouts and "not connected" uniformly.
+   * `quiet` commands (e.g. the hundreds a scan issues) are not reported to the console.
    */
-  sendCommand(commandLine) {
+  sendCommand(commandLine, { quiet = false } = {}) {
     const line = String(commandLine || '').trim().replace(/^\/+/, '');
     const requestId = crypto.randomUUID();
 
     if (!line) {
-      return Promise.resolve(this._result(requestId, line, -1, 'Empty command'));
+      return Promise.resolve(this._result(requestId, line, -1, 'Empty command', null, quiet));
     }
     if (!this.connected) {
-      return Promise.resolve(this._result(requestId, line, -1, 'Minecraft is not connected'));
+      return Promise.resolve(this._result(requestId, line, -1, 'Minecraft is not connected', null, quiet));
     }
 
     return new Promise((resolve) => {
-      this.queue.push({ requestId, commandLine: line, resolve });
+      this.queue.push({ requestId, commandLine: line, resolve, quiet });
       this._pump();
     });
   }
@@ -222,7 +223,7 @@ class MinecraftBridge extends EventEmitter {
       this.pending.delete(header.requestId);
       clearTimeout(entry.timer);
       const code = typeof body.statusCode === 'number' ? body.statusCode : -1;
-      entry.resolve(this._result(header.requestId, entry.commandLine, code, body.statusMessage, body));
+      entry.resolve(this._result(header.requestId, entry.commandLine, code, body.statusMessage, body, entry.quiet));
       this._pump();
       return;
     }
@@ -232,18 +233,18 @@ class MinecraftBridge extends EventEmitter {
 
   _pump() {
     while (this.connected && this.queue.length && this.pending.size < MAX_IN_FLIGHT) {
-      const { requestId, commandLine, resolve } = this.queue.shift();
+      const { requestId, commandLine, resolve, quiet } = this.queue.shift();
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
-        resolve(this._result(requestId, commandLine, -1, `No response after ${COMMAND_TIMEOUT_MS / 1000}s`));
+        resolve(this._result(requestId, commandLine, -1, `No response after ${COMMAND_TIMEOUT_MS / 1000}s`, null, quiet));
         this._pump();
       }, COMMAND_TIMEOUT_MS);
 
-      this.pending.set(requestId, { commandLine, resolve, timer });
+      this.pending.set(requestId, { commandLine, resolve, timer, quiet });
       const body = { commandLine, origin: { type: 'player' } };
       if (this.commandVersion !== null) body.version = this.commandVersion;
       this._send('commandRequest', body, requestId);
-      this.emit('command', { id: requestId, commandLine });
+      if (!quiet) this.emit('command', { id: requestId, commandLine });
     }
   }
 
@@ -260,7 +261,7 @@ class MinecraftBridge extends EventEmitter {
     }));
   }
 
-  _result(id, commandLine, statusCode, statusMessage, body = null) {
+  _result(id, commandLine, statusCode, statusMessage, body = null, quiet = false) {
     const result = {
       id,
       commandLine,
@@ -269,18 +270,18 @@ class MinecraftBridge extends EventEmitter {
       statusMessage: statusMessage || (statusCode === 0 ? 'OK' : 'Command failed'),
       body,
     };
-    this.emit('response', result);
+    if (!quiet) this.emit('response', result);
     return result;
   }
 
   _failAll(reason) {
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.resolve(this._result(id, entry.commandLine, -1, reason));
+      entry.resolve(this._result(id, entry.commandLine, -1, reason, null, entry.quiet));
     }
     this.pending.clear();
-    for (const { requestId, commandLine, resolve } of this.queue.splice(0)) {
-      resolve(this._result(requestId, commandLine, -1, reason));
+    for (const { requestId, commandLine, resolve, quiet } of this.queue.splice(0)) {
+      resolve(this._result(requestId, commandLine, -1, reason, null, quiet));
     }
   }
 
