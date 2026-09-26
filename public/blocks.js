@@ -1,7 +1,8 @@
 'use strict';
 
-// Block colours for the Nanny Cam, keyed by block id. Seeded from the old minimap project.
-// Scans report display names ("Oak Log"); blockColor() normalises them to ids ("oak_log").
+// What Ptolemy knows about blocks: colours for the Nanny Cam and which blocks are solid.
+// Loaded by the browser (as globals) and by the server (require), so both agree.
+// Scans report display names ("Oak Log"); blockId() normalises them to ids ("oak_log").
 const BLOCK_COLORS = {
     // Stone types
     'stone': '#7a7a7a',
@@ -205,6 +206,16 @@ const BLOCK_COLORS = {
     'melon': '#7a9e2c',
     'pumpkin': '#c17025',
 
+    // Common plants
+    'short_grass': '#5dab3d',
+    'tall_grass': '#5dab3d',
+    'fern': '#4f8f3a',
+    'large_fern': '#4f8f3a',
+    'seagrass': '#3c7e2d',
+    'poppy': '#c2261b',
+    'dandelion': '#f5d22f',
+    'cornflower': '#4a6fd8',
+
     // Fluids and other see-through blocks
     'water': '#3f76e4',
     'flowing_water': '#3f76e4',
@@ -217,8 +228,24 @@ const BLOCK_COLORS = {
     'powder_snow': '#f3f8f8',
 };
 
-// Drawn in a separate, blended pass so what's behind them stays visible.
-const TRANSLUCENT = /(water|glass|ice|slime|honey)/;
+// Blocks the agent (and a player) can move through. Anything not matched counts as solid,
+// so an unlisted plant makes the robot detour rather than bump into it.
+const NON_SOLID = new RegExp('^(?:' + [
+  'air', 'cave_air', 'void_air', 'light_block', 'structure_void',
+  'water', 'flowing_water', 'lava', 'flowing_lava', 'bubble_column',
+  '(?:short_|tall_)?grass', '(?:large_)?fern', 'dead_bush', '(?:tall_)?seagrass', 'kelp(?:_plant)?',
+  'dandelion', 'poppy', 'blue_orchid', 'allium', 'azure_bluet', '\\w+_tulip', 'oxeye_daisy', 'cornflower',
+  'lily_of_the_valley', 'wither_rose', 'torchflower', 'sunflower', 'lilac', 'rose_bush', 'peony',
+  'pitcher_plant', 'pink_petals', 'wildflowers', 'leaf_litter', 'bush', 'firefly_bush', 'short_dry_grass', 'tall_dry_grass',
+  '\\w*sapling', '(?:brown_|red_)?mushroom', 'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots',
+  'nether_sprouts', 'hanging_roots', 'spore_blossom', 'glow_lichen', 'sculk_vein', '\\w*vines?', 'sugar_cane', 'reeds',
+  'wheat', 'carrots', 'potatoes', 'beetroots?', '\\w*stem', 'sweet_berry_bush', 'cocoa', 'nether_wart',
+  '\\w*torch', 'redstone_wire', 'redstone_dust', 'tripwire', 'string', 'lever', '\\w*button', '\\w*pressure_plate',
+  '\\w*rail', '\\w*sign', '\\w*banner', 'ladder', 'cobweb', 'web', 'fire', 'soul_fire', 'snow_layer', 'top_snow',
+].join('|') + ')$');
+
+// Solid but see-through, so drawn in the blended pass too.
+const SEE_THROUGH_SOLID = /(glass|ice|slime|honey)/;
 
 function blockId(name) {
   return String(name).toLowerCase().replace(/^minecraft:/, '').trim().replace(/[^a-z0-9]+/g, '_');
@@ -245,6 +272,13 @@ function blockRgb(name) {
   return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-function isTranslucent(name) {
-  return TRANSLUCENT.test(blockId(name));
+function isSolid(name) {
+  return !NON_SOLID.test(blockId(name));
 }
+
+// Drawn in a separate, blended pass so what's behind them stays visible.
+function isTranslucent(name) {
+  return !isSolid(name) || SEE_THROUGH_SOLID.test(blockId(name));
+}
+
+if (typeof module !== 'undefined') module.exports = { BLOCK_COLORS, blockId, blockRgb, isSolid, isTranslucent };
