@@ -16,6 +16,8 @@
   const scanButton = $('cam-scan');
 
   const AGENT_COLOR = [0.95, 0.76, 0.2, 1];
+  const PATH_COLOR = [0.2, 0.85, 0.95, 1];
+  const PATH_DONE_COLOR = [0.2, 0.85, 0.95, 0.3];
   const TRANSLUCENT_ALPHA = 0.45;
 
   const gl = canvas.getContext('webgl2', { antialias: true });
@@ -166,7 +168,7 @@
     return { vao, buffer, count: 0 };
   }
 
-  const batches = { opaque: makeBatch(), translucent: makeBatch(), agent: makeBatch() };
+  const batches = { opaque: makeBatch(), translucent: makeBatch(), agent: makeBatch(), path: makeBatch() };
 
   function upload(batch, instances) {
     gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
@@ -177,9 +179,12 @@
   // --- Scene state -------------------------------------------------------------
 
   let sight = null;
+  let path = []; // [[x, y, z], ...] cells of the current planned route, starting at the robot
   let agentPos = [0, 0, 0];
   let visible = new Map(); // "x,y,z" -> block name, for hover lookups
   const camera = { yaw: Math.PI / 4, pitch: 0.6, distance: 28 };
+
+  const FACING_NAMES = ['Z+ (south)', 'X- (west)', 'Z- (north)', 'X+ (east)'];
 
   function facingVector(yRot) {
     const snapped = (((Math.round(yRot / 90) * 90) % 360) + 360) % 360;
@@ -228,8 +233,19 @@
       ax + 0.35 + fx * 0.5, ay + 0.45, az + 0.35 + fz * 0.5, 0.3, ...AGENT_COLOR.map((c, i) => (i < 3 ? c * 0.6 : c)),
     ]);
 
+    // The planned route: a bead per cell, already-walked cells faded.
+    const at = path.findIndex(([x, y, z]) => x === ax && y === ay && z === az);
+    const beads = [];
+    path.forEach(([x, y, z], i) => {
+      if (i === 0 && at === -1) return; // start of a path the robot has left
+      const color = at !== -1 && i <= at ? PATH_DONE_COLOR : PATH_COLOR;
+      beads.push(x + 0.375, y + 0.375, z + 0.375, 0.25, ...color);
+    });
+    upload(batches.path, beads);
+
     info.textContent = `${sight.scanned.toLocaleString()} blocks scanned at ${ax} ${ay} ${az}, `
-      + `facing ${sight.agent.facing} · ${visible.size.toLocaleString()} drawn · `
+      + `facing ${FACING_NAMES[(((Math.round(sight.agent.yRot / 90) % 4) + 4) % 4)]} · `
+      + `${visible.size.toLocaleString()} drawn · `
       + `${new Date(sight.time).toLocaleTimeString([], { hour12: false })}`;
     requestDraw();
   }
@@ -292,11 +308,14 @@
     }
 
     // See-through blocks last, blended over everything and without hiding each other.
+    // The path is drawn with them so it stays visible through leaves, grass and water.
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
-    gl.bindVertexArray(batches.translucent.vao);
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, batches.translucent.count);
+    for (const batch of [batches.path, batches.translucent]) {
+      gl.bindVertexArray(batch.vao);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, batch.count);
+    }
     gl.depthMask(true);
     gl.bindVertexArray(null);
   }
@@ -386,6 +405,20 @@
     const { x, y, z } = sight.agent.position;
     agentPos = [x, y, z];
     empty.hidden = true;
+    rebuild();
+  });
+
+  document.addEventListener('ptolemy:path', (ev) => {
+    path = ev.detail.cells;
+    rebuild();
+  });
+
+  // The robot moved (e.g. while walking a path): move its marker and the camera with it.
+  document.addEventListener('ptolemy:agent', (ev) => {
+    if (!sight) return;
+    const { x, y, z } = ev.detail.position;
+    agentPos = [x, y, z];
+    sight.agent = { ...sight.agent, position: ev.detail.position, yRot: ev.detail.yRot };
     rebuild();
   });
 

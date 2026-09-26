@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 const { scanAroundAgent, formatScan } = require('../agent/scan');
+const { WorldKnowledge } = require('../agent/world');
+const { Navigator, pathMessage, DEFAULT_SCAN_SIZE, DEFAULT_RETRIES } = require('../agent/navigator');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
@@ -33,6 +35,20 @@ class WebServer {
     this.bridge = bridge;
     this.log = [];
     this.sight = null; // the latest scan, in the compact form sent to the Nanny Cam
+    this.world = new WorldKnowledge();
+    this.navigator = new Navigator({
+      bridge,
+      world: this.world,
+      scan: (size, opts) => this._scan(size, opts),
+      log: (text, extra) => this._addLog('system', text, extra),
+      broadcast: (message) => {
+        // Keep the stored Sight's robot pose current, so pages opened mid-walk see where it is.
+        if (message.type === 'agent' && this.sight) {
+          this.sight.agent = { ...this.sight.agent, position: message.position, yRot: message.yRot };
+        }
+        this._broadcast(message);
+      },
+    });
     this.nextLogId = 1;
 
     this.http = http.createServer((req, res) => this._serveStatic(req, res));
@@ -101,6 +117,7 @@ class WebServer {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
     if (this.sight) ws.send(JSON.stringify(this.sight));
+    ws.send(JSON.stringify(pathMessage(this.navigator.path)));
 
     // The WebUI is re-read from disk on every page load, but the server code only on
     // start-up, so after a `git pull` the page can be newer than the server behind it.
@@ -219,6 +236,40 @@ class WebServer {
           + (args[0] ? '' : `. Usage: #inflight <1-${MAX_IN_FLIGHT_LIMIT}>`));
         return;
       }
+      case 'pathfind':
+      case 'flypathfind':
+        this.navigator.pathfind(args, { fly: name.toLowerCase().startsWith('fly') });
+        return;
+      case 'pathwalk':
+      case 'flypathwalk':
+        // Walking a stored path is the same whichever way it was planned.
+        this.navigator.pathwalk();
+        return;
+      case 'pathfindwalk':
+      case 'flypathfindwalk': {
+        // #pathfindwalk x y z [scan=15] [retries=3]
+        const opts = { scanSize: DEFAULT_SCAN_SIZE, retries: DEFAULT_RETRIES, fly: name.toLowerCase().startsWith('fly') };
+        const coords = [];
+        for (const arg of args) {
+          const m = /^(scan|retries)=(\d+)$/.exec(arg);
+          if (!m) coords.push(arg);
+          else if (m[1] === 'scan') opts.scanSize = Number(m[2]);
+          else opts.retries = Number(m[2]);
+        }
+        if (opts.scanSize % 2 === 0 || opts.scanSize < 3 || opts.scanSize > 31) {
+          say('scan= must be an odd size from 3 to 31.');
+          return;
+        }
+        this.navigator.pathfindwalk(coords, opts);
+        return;
+      }
+      case 'pathsafe':
+        if (args[0] === 'on' || args[0] === 'off') this.navigator.setSafe(args[0] === 'on');
+        else say(`Path safe mode is ${this.navigator.safe ? 'on' : 'off'}. Usage: #pathsafe on|off`);
+        return;
+      case 'pathstop':
+        this.navigator.stop();
+        return;
       case 'probe':
         this._probeAgent(args[0] === 'all');
         return;
@@ -231,6 +282,10 @@ class WebServer {
           + '#probe [all] (run every read-only agent command and summarize what each returns), '
           + '#scan [size] (identify the blocks around the agent; a size like 5 scans a 5x5x5 cube), '
           + '#inflight <n> (how many commands may be outstanding at once), '
+          + '#pathfind <x y z | @p> (plan a route that stays next to blocks; ~ = relative to the agent), '
+          + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=15] [retries=3] (plan and walk, '
+          + 'rescanning on the way), #flypathfind / #flypathwalk / #flypathfindwalk (the same, flying straight), '
+          + '#pathsafe on|off, #pathstop, '
           + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
           + '#raw <json> (send a hand-written WebSocket message), #help. '
           + 'Anything not starting with # is sent to Minecraft.');
@@ -240,20 +295,30 @@ class WebServer {
     }
   }
 
-  async _scan(cube) {
+  /** Scan around the agent and make the result its Sight. `quiet` logs one line instead of the layers. */
+  async _scan(cube, { quiet = false } = {}) {
     if (!this.bridge.connected) {
       this._addLog('system', 'Scan needs Minecraft to be connected.');
-      return;
+      return null;
     }
-    this._addLog('system', 'Scanning around the agent...');
+    if (!quiet) this._addLog('system', 'Scanning around the agent...');
     try {
       const scan = await scanAroundAgent(this.bridge, { cube });
-      this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
+      if (quiet) {
+        const { x, y, z } = scan.agent.position;
+        this._addLog('system', `Scanned ${scan.cells.length} blocks around ${x} ${y} ${z} `
+          + `in ${(scan.tookMs / 1000).toFixed(1)}s.`);
+      } else {
+        this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
+      }
       // Each scan replaces the robot's Sight.
+      this.world.setSight(scan);
       this.sight = sightMessage(scan);
       this._broadcast(this.sight);
+      return scan;
     } catch (err) {
       this._addLog('system', `Scan failed: ${err.message}`);
+      return null;
     }
   }
 
