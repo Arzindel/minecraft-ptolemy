@@ -1,0 +1,78 @@
+Claude Version/
+│
+├── 📄 Documentation
+│   ├── START_HERE.md              ⭐ Start reading here!
+│   ├── QUICKSTART.md              5-minute setup guide
+│   ├── README.md                  Complete user documentation
+│   ├── DEVELOPMENT.md             Developer guide with examples
+│   ├── ARCHITECTURE.md            System architecture diagrams
+│   ├── PROJECT_OVERVIEW.md        Feature overview and specs
+│   ├── COMPLETE.md                Build summary and statistics
+│   └── FILE_TREE.txt              This file
+│
+├── 🔧 Windows Helper Scripts
+│   ├── INSTALL_BEHAVIOR_PACK.bat  Auto-install behavior pack
+│   ├── START_SERVER.bat           Launch Node.js server
+│   └── CHECK_SETUP.bat            Verify installation status
+│
+├── 🎮 Minecraft Behavior Pack
+│   └── behavior_pack/
+│       ├── manifest.json          Pack metadata and dependencies
+│       │
+│       ├── functions/
+│       │   └── scan/
+│       │       ├── terrain_7x7.mcfunction      (49 blocks)
+│       │       ├── terrain_11x11.mcfunction    (121 blocks)
+│       │       ├── terrain_15x15.mcfunction    (225 blocks)
+│       │       ├── terrain_21x21.mcfunction    (441 blocks)
+│       │       ├── terrain_31x31.mcfunction    (961 blocks)
+│       │       ├── terrain_41x41.mcfunction    (1,681 blocks)
+│       │       ├── terrain_51x51.mcfunction    (2,601 blocks)
+│       │       ├── terrain_71x71.mcfunction    (5,041 blocks)
+│       │       └── terrain_101x101.mcfunction  (10,201 blocks)
+│       │
+│       └── scripts/
+│           └── main.js            Inventory scanner & HTTP bridge
+│
+├── 🖥️ Node.js Bridge Server
+│   └── server/
+│       ├── package.json           NPM dependencies (ws, express)
+│       ├── server.js              WebSocket bridge & HTTP server
+│       └── .gitignore             Git ignore rules
+│
+└── 🌐 Web User Interface
+    └── web_ui/
+        ├── index.html             UI structure (tabs, canvas, chat)
+        ├── style.css              Responsive dark theme styling
+        ├── app.js                 Main application logic
+        └── blockColors.js         150+ block color definitions
+
+📊 Statistics:
+   • Total Files: 27
+   • Code Files: 14 (JavaScript, HTML, CSS, MCFunction)
+   • Documentation: 7 (Markdown)
+   • Helper Scripts: 3 (Windows Batch)
+   • Config Files: 3 (JSON, gitignore)
+   • Lines of Code: ~13,000+
+
+🎯 Main Entry Points:
+   1. 📄 START_HERE.md          - Read this first
+   2. 🔧 CHECK_SETUP.bat        - Verify installation
+   3. 🔧 INSTALL_BEHAVIOR_PACK.bat - Install to Minecraft
+   4. 🔧 START_SERVER.bat       - Launch server
+   5. 🌐 http://localhost:3000  - Open web UI
+
+✨ Key Features:
+   • Real-time minimap with 7 zoom levels
+   • Live inventory display (36 slots)
+   • Integrated chat system
+   • Mobile/Steam Deck optimized
+   • Auto-reconnection
+   • 150+ block colors
+
+🚀 Quick Start:
+   1. /wsserver 19132              (in Minecraft)
+   2. INSTALL_BEHAVIOR_PACK.bat    (double-click)
+   3. START_SERVER.bat             (double-click)
+   4. Open http://localhost:3000   (in browser)
+
