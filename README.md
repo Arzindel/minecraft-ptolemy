@@ -136,6 +136,23 @@ The field of view, relative to the agent (right, up, forward), is 63 blocks:
 is up the page and `[ ]` marks the agent's cell. Click the result to see every cell with its world
 and relative coordinates.
 
+## Nanny Cam
+
+The **Nanny Cam** tab draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
+and no libraries:
+
+- **Scan** runs a scan of the chosen size, same as `#scan`. Every new scan replaces Sight.
+- **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
+  **double-click** to reset.
+- **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
+  or underground. Cut faces are drawn, so you can see inside walls.
+- **Hover** over a block to see its name and coordinates.
+- The robot is the yellow block. Its darker nose points the way it's facing.
+
+Air isn't drawn, and neither are blocks completely enclosed by other blocks. Water, glass and ice
+are drawn see-through. Block colours come from `public/blockColors.js`; blocks missing from that
+table get a stable colour derived from their name.
+
 ## How it works
 
 ```

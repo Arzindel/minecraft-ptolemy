@@ -32,6 +32,7 @@ class WebServer {
     this.port = port;
     this.bridge = bridge;
     this.log = [];
+    this.sight = null; // the latest scan, in the compact form sent to the Nanny Cam
     this.nextLogId = 1;
 
     this.http = http.createServer((req, res) => this._serveStatic(req, res));
@@ -99,6 +100,7 @@ class WebServer {
   _onClient(ws) {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
+    if (this.sight) ws.send(JSON.stringify(this.sight));
 
     // The WebUI is re-read from disk on every page load, but the server code only on
     // start-up, so after a `git pull` the page can be newer than the server behind it.
@@ -127,6 +129,11 @@ class WebServer {
             this.bridge.sendCommand(msg.text);
           }
           break;
+        case 'scan': {
+          const cube = Number(msg.size) || null;
+          this._scan(cube && cube % 2 === 1 && cube <= 31 ? cube : null);
+          break;
+        }
         case 'disconnect':
           this.bridge.disconnect();
           break;
@@ -242,6 +249,9 @@ class WebServer {
     try {
       const scan = await scanAroundAgent(this.bridge, { cube });
       this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
+      // Each scan replaces the robot's Sight.
+      this.sight = sightMessage(scan);
+      this._broadcast(this.sight);
     } catch (err) {
       this._addLog('system', `Scan failed: ${err.message}`);
     }
@@ -337,6 +347,25 @@ function summarizeAgentResult(commandName, result) {
     .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
     .join('  ');
   return prefix + (text || '(empty result)');
+}
+
+/**
+ * Compact form of a scan for the Nanny Cam: a palette of block names plus a flat
+ * [x, y, z, paletteIndex, ...] array of every non-air block (~30k blocks stay well under 1 MB).
+ */
+function sightMessage(scan) {
+  const palette = [];
+  const index = new Map();
+  const blocks = [];
+  for (const cell of scan.cells) {
+    if (cell.block === 'Air' || cell.block === '?') continue; // '?' = couldn't be identified
+    if (!index.has(cell.block)) {
+      index.set(cell.block, palette.length);
+      palette.push(cell.block);
+    }
+    blocks.push(cell.x, cell.y, cell.z, index.get(cell.block));
+  }
+  return { type: 'sight', agent: scan.agent, scanned: scan.cells.length, time: Date.now(), palette, blocks };
 }
 
 function codeChangedSinceStart(dir = SRC_DIR) {

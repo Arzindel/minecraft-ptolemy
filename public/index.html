@@ -39,6 +39,7 @@
       <nav class="tabs" role="tablist">
         <button class="tab" role="tab" data-tab="automatic" aria-selected="false">Automatic</button>
         <button class="tab" role="tab" data-tab="manual" aria-selected="true">Manual</button>
+        <button class="tab" role="tab" data-tab="nannycam" aria-selected="false">Nanny Cam</button>
       </nav>
 
       <div class="tab-panel" data-panel="automatic" hidden>
@@ -49,6 +50,32 @@
             from instructions typed here or sent through in-game chat.
           </p>
           <p class="muted">Not wired up yet. Use Manual mode for now.</p>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="nannycam" hidden>
+        <div class="cam">
+          <div class="cam-toolbar">
+            <span class="console-title">Nanny Cam</span>
+            <label class="cam-control" title="How many blocks around the robot to show">
+              Zoom <input type="range" id="cam-radius" min="1" max="15" value="15">
+              <span id="cam-radius-value">15</span>
+            </label>
+            <select id="cam-scan-size" title="Area to scan">
+              <option value="">Field of view</option>
+              <option value="5">5 × 5 × 5</option>
+              <option value="9" selected>9 × 9 × 9</option>
+              <option value="15">15 × 15 × 15</option>
+              <option value="31">31 × 31 × 31</option>
+            </select>
+            <button class="btn btn-primary btn-small" id="cam-scan" type="button">Scan</button>
+          </div>
+          <div class="cam-view">
+            <canvas id="cam-canvas"></canvas>
+            <div class="cam-empty" id="cam-empty">Nothing in sight yet. Press <strong>Scan</strong> (or run <code>#scan</code>).</div>
+            <div class="cam-tooltip" id="cam-tooltip" hidden></div>
+          </div>
+          <p class="hint"><span id="cam-info">No sight yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>
         </div>
       </div>
 
@@ -90,5 +117,7 @@
   </main>
 
   <script src="app.js"></script>
+  <script src="blockColors.js"></script>
+  <script src="nannycam.js"></script>
 </body>
 </html>
