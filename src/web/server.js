@@ -57,6 +57,9 @@ class WebServer {
       this._broadcastStatus();
     });
     bridge.on('chat', ({ sender, message }) => this._addLog('chat', message, { sender }));
+    bridge.on('agent', ({ commandName, result, body }) => {
+      this._addLog('agent', summarizeAgentResult(commandName, result), { commandLine: commandName, body });
+    });
   }
 
   listen() {
@@ -151,6 +154,19 @@ class WebServer {
       res.end(content);
     });
   }
+}
+
+function summarizeAgentResult(commandName, result) {
+  const prefix = commandName ? `agent ${commandName}: ` : 'agent: ';
+  if (result === null || result === undefined) return `${prefix}(no result)`;
+  if (typeof result !== 'object') return prefix + String(result);
+
+  // Show the interesting fields first, then whatever else the game sent.
+  const { commandName: _ignored, ...rest } = result;
+  const text = Object.entries(rest)
+    .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join('  ');
+  return prefix + (text || '(empty result)');
 }
 
 /** LAN IPv4 addresses, so the UI can suggest a `/connect` target for other devices. */

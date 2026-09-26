@@ -26,7 +26,7 @@
     inspectCaption: $('inspect-caption'),
   };
 
-  const GLYPHS = { command: '›', response: '✓', error: '✗', chat: '💬', system: '·' };
+  const GLYPHS = { command: '›', response: '✓', error: '✗', chat: '💬', agent: '🤖', system: '·' };
   const HISTORY_KEY = 'ptolemy.commandHistory';
   const TAB_KEY = 'ptolemy.tab';
 
@@ -164,7 +164,7 @@
 
     li.append(time, glyph, text);
 
-    if (entry.kind === 'response' || entry.kind === 'error') {
+    if (entry.body || entry.kind === 'response' || entry.kind === 'error') {
       li.dataset.inspectable = '';
       li.addEventListener('click', () => inspect(entry, li));
     }
@@ -172,13 +172,15 @@
     el.log.appendChild(li);
     if (stick) el.log.scrollTop = el.log.scrollHeight;
 
-    if (entry.kind === 'response' || entry.kind === 'error') inspect(entry, li);
+    if (entry.body || entry.kind === 'response' || entry.kind === 'error') inspect(entry, li);
   }
 
   function inspect(entry, li) {
     el.log.querySelectorAll('li.selected').forEach((n) => n.classList.remove('selected'));
     li.classList.add('selected');
-    el.inspectCaption.textContent = entry.commandLine ? `/${entry.commandLine}` : 'Response';
+    el.inspectCaption.textContent = entry.kind === 'agent'
+      ? 'AgentCommand event'
+      : entry.commandLine ? `/${entry.commandLine}` : 'Response';
     el.inspect.textContent = JSON.stringify(
       entry.body ?? { statusCode: entry.statusCode, statusMessage: entry.text },
       null,

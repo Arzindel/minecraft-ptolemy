@@ -18,6 +18,8 @@ const COMMAND_TIMEOUT_MS = 10000;
  *   'response' ({ id, commandLine, ok, statusCode, statusMessage, body })
  *   'event'    ({ name, body })                      a subscribed game event fired
  *   'chat'     ({ sender, message, type })           a PlayerMessage event
+ *   'agent'    ({ commandName, result, body })       an AgentCommand event: the outcome of an
+ *                                                    `agent ...` command (e.g. what inspect saw)
  *   'log'      (string)                              bridge-level diagnostics
  */
 class MinecraftBridge extends EventEmitter {
@@ -120,6 +122,9 @@ class MinecraftBridge extends EventEmitter {
     });
 
     this.subscribe('PlayerMessage');
+    // Agent commands only acknowledge the request in their commandResponse
+    // ("Agent inspect successful"); the actual outcome arrives later as this event.
+    this.subscribe('AgentCommand');
     this.sendCommand('getlocalplayername').then((res) => {
       if (res.ok && res.body && typeof res.body.localplayername === 'string') {
         this.player = res.body.localplayername;
@@ -147,6 +152,9 @@ class MinecraftBridge extends EventEmitter {
         const props = body.properties || body;
         const sender = props.sender || (props.player && props.player.name) || props.Sender || 'unknown';
         this.emit('chat', { sender, message: props.message, type: props.type || props.MessageType });
+      }
+      if (name === 'AgentCommand') {
+        this.emit('agent', parseAgentCommand(body));
       }
       this.emit('event', { name, body });
       return;
@@ -218,6 +226,25 @@ class MinecraftBridge extends EventEmitter {
   _emitStatus() {
     this.emit('status', this.getStatus());
   }
+}
+
+/**
+ * AgentCommand payloads differ between game versions: fields may sit on the body or
+ * under body.properties, and the result may be an object or a JSON-encoded string.
+ */
+function parseAgentCommand(body) {
+  const props = body.properties || body;
+  let result = props.Result ?? props.result ?? null;
+  if (typeof result === 'string') {
+    try {
+      result = JSON.parse(result);
+    } catch {
+      // leave it as the raw string
+    }
+  }
+  const commandName = props.CommandName ?? props.commandName
+    ?? (result && typeof result === 'object' ? result.commandName : undefined) ?? null;
+  return { commandName, result, body };
 }
 
 module.exports = { MinecraftBridge };
