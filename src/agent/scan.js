@@ -10,12 +10,22 @@ const FACINGS = {
 };
 
 /**
- * The agent's field of view in its own frame (right, up, forward):
- * everything within 1 block (diagonals included, and its own cell),
+ * Cells to scan, in the agent's own frame (right, up, forward).
+ * With `cube` (an odd edge length, e.g. 5) it's a cube centred on the agent. Otherwise it's
+ * the default field of view: everything within 1 block (diagonals included, and its own cell),
  * widened by 1 block to each side and extended 2 blocks forward.
  */
-function localCells() {
+function localCells(cube) {
   const cells = [];
+  if (cube) {
+    const r = Math.floor(cube / 2);
+    for (let up = -r; up <= r; up++) {
+      for (let forward = -r; forward <= r; forward++) {
+        for (let right = -r; right <= r; right++) cells.push({ right, up, forward });
+      }
+    }
+    return cells;
+  }
   for (let up = -1; up <= 1; up++) {
     for (let forward = -1; forward <= 3; forward++) {
       const reach = forward <= 1 ? 2 : 1; // sides are only widened within the cube
@@ -47,7 +57,7 @@ function blockFromTestResponse(res) {
  * Scan the blocks around the agent. Returns the agent's pose and one entry per cell,
  * with both world coordinates and coordinates relative to the agent.
  */
-async function scanAroundAgent(bridge) {
+async function scanAroundAgent(bridge, { cube } = {}) {
   const started = Date.now();
   const pose = await bridge.sendCommand('agent getposition', { quiet: true });
   if (!pose.ok || !pose.body || !pose.body.position) {
@@ -60,7 +70,7 @@ async function scanAroundAgent(bridge) {
   const [fx, , fz] = facing.forward;
   const [rx, , rz] = facing.right;
 
-  const cells = await Promise.all(localCells().map(async (cell) => {
+  const cells = await Promise.all(localCells(cube).map(async (cell) => {
     const x = ax + cell.right * rx + cell.forward * fx;
     const y = ay + cell.up;
     const z = az + cell.right * rz + cell.forward * fz;
@@ -75,6 +85,8 @@ async function scanAroundAgent(bridge) {
   };
 }
 
+const SYMBOLS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
 /**
  * Render a scan as three top-down layers, oriented from the agent's point of view:
  * forward is up the page, its left and right are left and right. [ ] marks the agent's cell.
@@ -82,7 +94,8 @@ async function scanAroundAgent(bridge) {
 function formatScan(scan) {
   const legend = new Map([['Air', '·']]);
   const symbol = (block) => {
-    if (!legend.has(block)) legend.set(block, String.fromCharCode(65 + legend.size - 1));
+    if (block === '?') return '?';
+    if (!legend.has(block)) legend.set(block, SYMBOLS[legend.size - 1] || '#');
     return legend.get(block);
   };
 
@@ -90,15 +103,20 @@ function formatScan(scan) {
   const { x, y, z } = scan.agent.position;
   const lines = [
     `Scan at ${x} ${y} ${z}, facing ${scan.agent.facing} (y-rot ${scan.agent.yRot}): `
-      + `${scan.cells.length} blocks in ${(scan.tookMs / 1000).toFixed(1)}s`,
+      + `${scan.cells.length} blocks in ${(scan.tookMs / 1000).toFixed(2)}s`,
   ];
 
-  const layers = [[1, 'above'], [0, 'level'], [-1, 'below']];
-  for (const [up, label] of layers) {
+  const range = (key) => [Math.min(...scan.cells.map((c) => c[key])), Math.max(...scan.cells.map((c) => c[key]))];
+  const [minRight, maxRight] = range('right');
+  const [minUp, maxUp] = range('up');
+  const [minForward, maxForward] = range('forward');
+
+  for (let up = maxUp; up >= minUp; up--) {
+    const label = up > 0 ? `${up} above` : up < 0 ? `${-up} below` : 'level';
     lines.push('', `  ${label} (y ${y + up})`);
-    for (let forward = 3; forward >= -1; forward--) {
+    for (let forward = maxForward; forward >= minForward; forward--) {
       let row = '';
-      for (let right = -2; right <= 2; right++) {
+      for (let right = minRight; right <= maxRight; right++) {
         const cell = byKey.get(`${right},${up},${forward}`);
         const s = cell ? symbol(cell.block) : ' ';
         row += right === 0 && forward === 0 && up === 0 ? `[${s}]` : ` ${s} `;

@@ -6,7 +6,7 @@ const WebSocket = require('ws');
 
 // Bedrock silently drops command requests once roughly 100 are in flight,
 // so we keep our own queue and only let a safe number out at a time.
-const MAX_IN_FLIGHT = 50;
+const DEFAULT_MAX_IN_FLIGHT = 50;
 const COMMAND_TIMEOUT_MS = 10000;
 
 /**
@@ -40,6 +40,7 @@ class MinecraftBridge extends EventEmitter {
     // body.version of command requests: the command syntax version. Other tools send a
     // Minecraft version string (e.g. "1.21.0"); null leaves the field out entirely.
     this.commandVersion = 1;
+    this.maxInFlight = DEFAULT_MAX_IN_FLIGHT;
   }
 
   listen() {
@@ -232,7 +233,7 @@ class MinecraftBridge extends EventEmitter {
   }
 
   _pump() {
-    while (this.connected && this.queue.length && this.pending.size < MAX_IN_FLIGHT) {
+    while (this.connected && this.queue.length && this.pending.size < this.maxInFlight) {
       const { requestId, commandLine, resolve, quiet } = this.queue.shift();
       const timer = setTimeout(() => {
         this.pending.delete(requestId);

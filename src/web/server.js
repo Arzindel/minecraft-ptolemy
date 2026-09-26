@@ -188,9 +188,22 @@ class WebServer {
         }
         return;
       }
-      case 'scan':
-        this._scan();
+      case 'scan': {
+        const cube = args[0] ? Number(args[0]) : null;
+        if (cube !== null && !(Number.isInteger(cube) && cube >= 1 && cube % 2 === 1 && cube <= 31)) {
+          say('Usage: #scan (field of view) or #scan <odd size up to 31> for a cube, e.g. #scan 5');
+          return;
+        }
+        this._scan(cube);
         return;
+      }
+      case 'inflight': {
+        const n = Number(args[0]);
+        if (args[0] && Number.isInteger(n) && n >= 1) this.bridge.maxInFlight = n;
+        say(`Up to ${this.bridge.maxInFlight} commands are sent to Minecraft at once`
+          + (args[0] ? '' : '. Usage: #inflight <n>'));
+        return;
+      }
       case 'probe':
         this._probeAgent(args[0] === 'all');
         return;
@@ -201,7 +214,8 @@ class WebServer {
       case '':
         say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
           + '#probe [all] (run every read-only agent command and summarize what each returns), '
-          + '#scan (identify the blocks around the agent), '
+          + '#scan [size] (identify the blocks around the agent; a size like 5 scans a 5x5x5 cube), '
+          + '#inflight <n> (how many commands may be outstanding at once), '
           + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
           + '#raw <json> (send a hand-written WebSocket message), #help. '
           + 'Anything not starting with # is sent to Minecraft.');
@@ -211,14 +225,14 @@ class WebServer {
     }
   }
 
-  async _scan() {
+  async _scan(cube) {
     if (!this.bridge.connected) {
       this._addLog('system', 'Scan needs Minecraft to be connected.');
       return;
     }
     this._addLog('system', 'Scanning around the agent...');
     try {
-      const scan = await scanAroundAgent(this.bridge);
+      const scan = await scanAroundAgent(this.bridge, { cube });
       this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
     } catch (err) {
       this._addLog('system', `Scan failed: ${err.message}`);
