@@ -136,6 +136,12 @@ Information panel.
 | `PTOLEMY_KEY_<ENDPOINT>` | | Where each endpoint's saved key lives, in `.env` (e.g. `PTOLEMY_KEY_NVIDIA`) |
 | `PTOLEMY_MCP_URL` | `http://localhost:$PTOLEMY_UI_PORT/mcp` | Where `npm run mcp` relays to |
 
+If those ports are already taken (for example by another Ptolemy), both move up together: the second
+instance uses 3001 and 8081, the third 3002 and 8082, and so on. The console, and the connect hint in the
+WebUI header, show which ones it got. Instances share the `data/` folder, so settings and world memory
+changed in one can be overwritten by another. `npm run mcp` relays to port 3000 unless you set
+`PTOLEMY_UI_PORT` or `PTOLEMY_MCP_URL`.
+
 Ptolemy reads a `.env` file in the project folder at start-up (it's git-ignored). API keys typed into
 Configuration → LLM are saved there.
 

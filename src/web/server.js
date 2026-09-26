@@ -128,10 +128,20 @@ class WebServer {
     });
   }
 
-  listen() {
+  listen(port = this.port) {
     return new Promise((resolve, reject) => {
-      this.http.once('error', reject);
-      this.http.listen(this.port, resolve);
+      const onError = (err) => {
+        this.http.removeListener('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        this.http.removeListener('error', onError);
+        this.port = port;
+        resolve();
+      };
+      this.http.once('error', onError);
+      this.http.once('listening', onListening);
+      this.http.listen(port);
     });
   }
 

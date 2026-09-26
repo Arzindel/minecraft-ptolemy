@@ -43,12 +43,19 @@ class MinecraftBridge extends EventEmitter {
     this.maxInFlight = MAX_IN_FLIGHT_LIMIT;
   }
 
-  listen() {
+  listen(port = this.port) {
     return new Promise((resolve, reject) => {
-      this.wss = new WebSocket.Server({ port: this.port });
-      this.wss.once('listening', resolve);
-      this.wss.once('error', reject);
-      this.wss.on('connection', (socket, req) => this._onConnection(socket, req));
+      const wss = new WebSocket.Server({ port });
+      wss.once('listening', () => {
+        this.wss = wss;
+        this.port = port;
+        resolve();
+      });
+      wss.once('error', (err) => {
+        wss.close();
+        reject(err);
+      });
+      wss.on('connection', (socket, req) => this._onConnection(socket, req));
     });
   }
 
