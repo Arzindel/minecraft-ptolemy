@@ -2,14 +2,14 @@
 
 const { FORWARD, turnLeft, turnRight } = require('./pose');
 
-// Every agent command costs 1. Stepping into a cell nobody has seen costs a little more,
+// Defaults; the live values come from the Configuration tab (src/settings.js).
+// Flying: every move costs 1. Walking: entering a cell costs by what holds the robot up there, as
+// if it walked, swam and climbed; a cell takes the cost of its best support, and a cell in water
+// always costs the water price. Stepping into a cell nobody has seen costs `unknownPenalty` more,
 // so known routes win when they're about as short, but unknown cells are still allowed
 // (optimistic planning: the walker rescans before entering them).
-const UNKNOWN_PENALTY = 0.5;
-// Walking mode: entering a cell costs extra depending on what holds the robot up there, as if it
-// walked, swam and climbed. A cell takes the cost of its best support; every move still costs 1.
-const SUPPORT = { ground: 0, water: 1, wall: 1, groundEdge: 2, wallDiagonal: 2, groundCorner: 3,
-  ceiling: 3, ceilingEdge: 4, ceilingCorner: 5, airborne: 6 };
+const DEFAULT_COSTS = { ground: 1, water: 5, wall: 5, groundEdge: 3, wallDiagonal: 8, groundCorner: 10,
+  ceiling: 15, ceilingEdge: 20, ceilingCorner: 20, airborne: 40 };
 // Support category of a solid neighbour at offset (dx, dy, dz), by how much it touches the cell.
 function supportFrom(dx, dy, dz) {
   const sideways = Math.abs(dx) + Math.abs(dz);
@@ -17,7 +17,12 @@ function supportFrom(dx, dy, dz) {
   if (dy > 0) return ['ceiling', 'ceilingEdge', 'ceilingCorner'][sideways];
   return sideways === 1 ? 'wall' : 'wallDiagonal';
 }
-const MAX_EXPANSIONS = 400000;
+// The exact search gets a budget; if it runs out (usually because every route is expensive, e.g. a
+// target up in open air, so it keeps trying detours), a greedier search that trusts the distance
+// estimate WEIGHT times more finds a good, if not provably cheapest, route quickly.
+const EXACT_EXPANSIONS = 120000;
+const GREEDY_EXPANSIONS = 400000;
+const GREEDY_WEIGHT = 8;
 const SEARCH_MARGIN = 32;
 const WORLD_MIN_Y = -64;
 const WORLD_MAX_Y = 319;
@@ -35,12 +40,16 @@ const FLOOD_LIMIT = 50000;
  *
  * Returns { steps, cells, unknownSteps } or { error }.
  */
-function planPath(world, start, goal, { hug = false } = {}) {
+function planPath(world, start, goal, {
+  hug = false, costs = DEFAULT_COSTS, turnCost = 1, unknownPenalty = 0.5,
+} = {}) {
+  // Cheapest possible move, so the distance estimate never overestimates (keeps A* optimal).
+  const cheapest = hug ? Math.min(...Object.values(costs)) : 1;
   const goalCells = goal.cells || [[goal.x, goal.y, goal.z]];
   const goalKeys = new Set(goalCells.map((c) => c.join(',')));
   const isGoal = (x, y, z) => goalKeys.has(`${x},${y},${z}`);
   const slack = Math.max(...goalCells.map(([x, y, z]) => Math.abs(x - goal.x) + Math.abs(y - goal.y) + Math.abs(z - goal.z)));
-  const heuristic = (x, y, z) => Math.max(0,
+  const heuristic = (x, y, z) => cheapest * Math.max(0,
     Math.abs(x - goal.x) + Math.abs(y - goal.y) + Math.abs(z - goal.z) - slack);
 
   const open = goalCells.filter(([x, y, z]) => world.state(x, y, z) !== 'solid');
@@ -66,18 +75,29 @@ function planPath(world, start, goal, { hug = false } = {}) {
     && z >= lo[2] - SEARCH_MARGIN && z <= hi[2] + SEARCH_MARGIN
     && y >= Math.max(WORLD_MIN_Y, lo[1] - SEARCH_MARGIN) && y <= Math.min(WORLD_MAX_Y, hi[1] + SEARCH_MARGIN);
 
-  // Extra cost of standing in a cell, from its best support. Unknown neighbours count as solid
-  // (optimistic, like unknown cells themselves); the walker rescans before relying on them.
+  // Cost of entering a cell when walking: its best support, counting only blocks known to be solid.
+  // An unseen cell is neither air nor wall: the terrain is assumed to carry on as last seen, so it
+  // costs a ground step at the walking height of the nearest scanned column and the airborne price
+  // above or below it (floating, or probably inside the ground). The walker rescans before entering
+  // unseen cells and re-plans with what's actually there, so a cliff just past the edge of Sight is
+  // found and climbed down, rather than flown over.
   const supportCache = new Map();
   const supportCost = (x, y, z) => {
     const k = `${x},${y},${z}`;
     if (supportCache.has(k)) return supportCache.get(k);
-    let best = world.isWater(x, y, z) ? SUPPORT.water : SUPPORT.airborne;
-    for (let dx = -1; dx <= 1 && best > 0; dx++) {
-      for (let dy = -1; dy <= 1 && best > 0; dy++) {
-        for (let dz = -1; dz <= 1 && best > 0; dz++) {
-          if ((dx || dy || dz) && world.state(x + dx, y + dy, z + dz) !== 'free') {
-            best = Math.min(best, SUPPORT[supportFrom(dx, dy, dz)]);
+    let best = costs.airborne;
+    if (world.state(x, y, z) === 'unknown') {
+      const surface = world.surfaceNear(x, z, y);
+      if (surface === null || surface === y) best = costs.ground;
+    } else if (world.isWater(x, y, z)) {
+      best = costs.water;
+    } else {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            if ((dx || dy || dz) && world.state(x + dx, y + dy, z + dz) === 'solid') {
+              best = Math.min(best, costs[supportFrom(dx, dy, dz)]);
+            }
           }
         }
       }
@@ -87,48 +107,57 @@ function planPath(world, start, goal, { hug = false } = {}) {
   };
 
   const stateKey = (x, y, z, f) => `${x},${y},${z},${f}`;
-  const startKey = stateKey(start.x, start.y, start.z, start.facing);
-  const cameFrom = new Map([[startKey, null]]);
-  const bestCost = new Map([[startKey, 0]]);
-  const queue = new MinHeap();
-  queue.push(heuristic(start.x, start.y, start.z), { x: start.x, y: start.y, z: start.z, facing: start.facing, cost: 0 });
-
-  let expansions = 0;
-  let reached = null;
-  while (queue.size) {
-    const node = queue.pop();
-    const k = stateKey(node.x, node.y, node.z, node.facing);
-    if (node.cost > bestCost.get(k)) continue; // stale heap entry
-    if (isGoal(node.x, node.y, node.z)) { reached = node; break; }
-    if (++expansions > MAX_EXPANSIONS) return { error: 'search gave up (the area is too large or too maze-like)' };
-
-    const [fx, , fz] = FORWARD[node.facing];
-    const moves = [
-      ['forward', node.x + fx, node.y, node.z + fz, node.facing],
-      ['up', node.x, node.y + 1, node.z, node.facing],
-      ['down', node.x, node.y - 1, node.z, node.facing],
-      ['turn right', node.x, node.y, node.z, turnRight(node.facing)],
-      ['turn left', node.x, node.y, node.z, turnLeft(node.facing)],
-    ];
-    for (const [action, x, y, z, facing] of moves) {
-      let cost = node.cost + 1;
-      if (!action.startsWith('turn')) {
-        if (!inBox(x, y, z)) continue;
-        const state = world.state(x, y, z);
-        if (state === 'solid') continue;
-        if (state === 'unknown') cost += UNKNOWN_PENALTY;
-        if (hug) cost += supportCost(x, y, z);
-      }
-      const nk = stateKey(x, y, z, facing);
-      if (bestCost.has(nk) && bestCost.get(nk) <= cost) continue;
-      bestCost.set(nk, cost);
-      cameFrom.set(nk, { from: k, action });
-      queue.push(cost + heuristic(x, y, z), { x, y, z, facing, cost });
-    }
-  }
-
+  let result = search(1, EXACT_EXPANSIONS);
+  const approximate = result.gaveUp;
+  if (approximate) result = search(GREEDY_WEIGHT, GREEDY_EXPANSIONS);
+  if (result.gaveUp) return { error: 'search gave up (the area is too large or too maze-like)' };
+  const { reached, cameFrom } = result;
   if (!reached) {
     return { error: 'the target cannot be reached' };
+  }
+
+  function search(weight, maxExpansions) {
+    const startKey = stateKey(start.x, start.y, start.z, start.facing);
+    const cameFrom = new Map([[startKey, null]]);
+    const bestCost = new Map([[startKey, 0]]);
+    const queue = new MinHeap();
+    queue.push(weight * heuristic(start.x, start.y, start.z), { x: start.x, y: start.y, z: start.z, facing: start.facing, cost: 0 });
+
+    let expansions = 0;
+    while (queue.size) {
+      const node = queue.pop();
+      const k = stateKey(node.x, node.y, node.z, node.facing);
+      if (node.cost > bestCost.get(k)) continue; // stale heap entry
+      if (isGoal(node.x, node.y, node.z)) return { reached: node, cameFrom };
+      if (++expansions > maxExpansions) return { gaveUp: true };
+
+      const [fx, , fz] = FORWARD[node.facing];
+      const moves = [
+        ['forward', node.x + fx, node.y, node.z + fz, node.facing],
+        ['up', node.x, node.y + 1, node.z, node.facing],
+        ['down', node.x, node.y - 1, node.z, node.facing],
+        ['turn right', node.x, node.y, node.z, turnRight(node.facing)],
+        ['turn left', node.x, node.y, node.z, turnLeft(node.facing)],
+      ];
+      for (const [action, x, y, z, facing] of moves) {
+        let cost = node.cost;
+        if (action.startsWith('turn')) {
+          cost += turnCost;
+        } else {
+          if (!inBox(x, y, z)) continue;
+          const state = world.state(x, y, z);
+          if (state === 'solid') continue;
+          cost += hug ? supportCost(x, y, z) : 1;
+          if (state === 'unknown') cost += unknownPenalty;
+        }
+        const nk = stateKey(x, y, z, facing);
+        if (bestCost.has(nk) && bestCost.get(nk) <= cost) continue;
+        bestCost.set(nk, cost);
+        cameFrom.set(nk, { from: k, action });
+        queue.push(cost + weight * heuristic(x, y, z), { x, y, z, facing, cost });
+      }
+    }
+    return { reached: null, cameFrom };
   }
 
   // Walk back from the goal, then turn the chain into commands with the pose expected after each.
@@ -147,7 +176,7 @@ function planPath(world, start, goal, { hug = false } = {}) {
     unknown: !action.startsWith('turn') && world.state(expect.x, expect.y, expect.z) === 'unknown',
   }));
   const cells = [[start.x, start.y, start.z], ...steps.filter((s) => s.enters).map((s) => s.enters)];
-  return { steps, cells, unknownSteps: steps.filter((s) => s.unknown).length };
+  return { steps, cells, unknownSteps: steps.filter((s) => s.unknown).length, approximate };
 }
 
 /**
@@ -233,4 +262,4 @@ function cellsAround(x, y, z) {
   return cells;
 }
 
-module.exports = { planPath, summarizeSteps, cellsAround, SUPPORT, supportFrom };
+module.exports = { planPath, summarizeSteps, cellsAround, DEFAULT_COSTS, supportFrom };

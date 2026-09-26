@@ -40,6 +40,7 @@
         <button class="tab" role="tab" data-tab="automatic" aria-selected="false">Automatic</button>
         <button class="tab" role="tab" data-tab="manual" aria-selected="true">Manual</button>
         <button class="tab" role="tab" data-tab="nannycam" aria-selected="false">Nanny Cam</button>
+        <button class="tab" role="tab" data-tab="config" aria-selected="false">Configuration</button>
       </nav>
 
       <div class="tab-panel" data-panel="automatic" hidden>
@@ -61,12 +62,13 @@
               Zoom <input type="range" id="cam-radius" min="1" max="15" value="15">
               <span id="cam-radius-value">15</span>
             </label>
-            <select id="cam-scan-size" title="Area to scan">
+            <select id="cam-scan-radius" title="How far around the robot to scan (same units as Zoom)">
               <option value="">Field of view</option>
-              <option value="5">5 × 5 × 5</option>
-              <option value="9" selected>9 × 9 × 9</option>
-              <option value="15">15 × 15 × 15</option>
-              <option value="31">31 × 31 × 31</option>
+              <option value="2">Radius 2 (5³)</option>
+              <option value="4" selected>Radius 4 (9³)</option>
+              <option value="7">Radius 7 (15³)</option>
+              <option value="10">Radius 10 (21³)</option>
+              <option value="15">Radius 15 (31³)</option>
             </select>
             <button class="btn btn-primary btn-small" id="cam-scan" type="button">Scan</button>
           </div>
@@ -76,6 +78,17 @@
             <div class="cam-tooltip" id="cam-tooltip" hidden></div>
           </div>
           <p class="hint"><span id="cam-info">No sight yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="config" hidden>
+        <div class="config">
+          <div class="console-toolbar">
+            <span class="console-title">Configuration</span>
+            <span class="muted small">Changes apply immediately and are saved on the server.</span>
+            <button class="btn btn-ghost btn-small" id="config-reset" type="button">Reset to defaults</button>
+          </div>
+          <form class="config-form" id="config-form" onsubmit="return false"></form>
         </div>
       </div>
 
@@ -119,5 +132,6 @@
   <script src="app.js"></script>
   <script src="blocks.js"></script>
   <script src="nannycam.js"></script>
+  <script src="config.js"></script>
 </body>
 </html>

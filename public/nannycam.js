@@ -12,7 +12,7 @@
   const info = $('cam-info');
   const radiusInput = $('cam-radius');
   const radiusValue = $('cam-radius-value');
-  const scanSize = $('cam-scan-size');
+  const scanRadius = $('cam-scan-radius');
   const scanButton = $('cam-scan');
 
   const AGENT_COLOR = [0.95, 0.76, 0.2, 1];
@@ -399,7 +399,7 @@
   });
 
   scanButton.addEventListener('click', () => {
-    window.ptolemy.send({ type: 'scan', size: scanSize.value ? Number(scanSize.value) : null });
+    window.ptolemy.send({ type: 'scan', radius: scanRadius.value ? Number(scanRadius.value) : null });
     info.textContent = 'Scanning...';
   });
 

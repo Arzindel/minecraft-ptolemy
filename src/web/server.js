@@ -7,7 +7,8 @@ const path = require('path');
 const WebSocket = require('ws');
 const { scanAroundAgent, formatScan } = require('../agent/scan');
 const { WorldKnowledge } = require('../agent/world');
-const { Navigator, pathMessage, DEFAULT_SCAN_SIZE, DEFAULT_RETRIES } = require('../agent/navigator');
+const { Navigator, pathMessage } = require('../agent/navigator');
+const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
 
@@ -15,6 +16,7 @@ const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const SRC_DIR = path.join(__dirname, '..');
 const STARTED_AT = Date.now();
 const LOG_HISTORY = 500;
+const MAX_SCAN_RADIUS = 15; // 31x31x31, about 30 seconds
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -37,10 +39,21 @@ class WebServer {
     this.log = [];
     this.sight = null; // the latest scan, in the compact form sent to the Nanny Cam
     this.world = new WorldKnowledge();
+
+    // Tunables from the Configuration tab, saved in data/settings.json.
+    this.settings = new Settings();
+    const applySettings = () => { bridge.maxInFlight = this.settings.get('bridge.maxInFlight'); };
+    applySettings();
+    this.settings.on('change', () => {
+      applySettings();
+      this._broadcast(this.settings.message());
+    });
+
     this.navigator = new Navigator({
       bridge,
       world: this.world,
-      scan: (size, opts) => this._scan(size, opts),
+      settings: this.settings,
+      scan: (radius, opts) => this._scan(radius, opts),
       log: (text, extra) => this._addLog('system', text, extra),
       broadcast: (message) => {
         // Keep the stored Sight's robot pose current, so pages opened mid-walk see where it is.
@@ -123,6 +136,7 @@ class WebServer {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
     if (this.sight) ws.send(JSON.stringify(this.sight));
+    ws.send(JSON.stringify(this.settings.message()));
     ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
     ws.send(JSON.stringify(pathMessage('fly', this.navigator.paths.fly)));
 
@@ -154,10 +168,17 @@ class WebServer {
           }
           break;
         case 'scan': {
-          const cube = Number(msg.size) || null;
-          this._scan(cube && cube % 2 === 1 && cube <= 31 ? cube : null);
+          const radius = Number(msg.radius) || null;
+          this._scan(radius && Number.isInteger(radius) && radius <= MAX_SCAN_RADIUS ? radius : null);
           break;
         }
+        case 'settings':
+          this.settings.update(msg.values);
+          break;
+        case 'settingsReset':
+          this.settings.reset();
+          this._addLog('system', 'Configuration reset to defaults.');
+          break;
         case 'disconnect':
           this.bridge.disconnect();
           break;
@@ -221,12 +242,13 @@ class WebServer {
         return;
       }
       case 'scan': {
-        const cube = args[0] ? Number(args[0]) : null;
-        if (cube !== null && !(Number.isInteger(cube) && cube >= 1 && cube % 2 === 1 && cube <= 31)) {
-          say('Usage: #scan (field of view) or #scan <odd size up to 31> for a cube, e.g. #scan 5');
+        const radius = args[0] ? Number(args[0]) : null;
+        if (radius !== null && !(Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS)) {
+          say(`Usage: #scan (field of view) or #scan <radius 1-${MAX_SCAN_RADIUS}> for a cube around the agent, `
+            + 'e.g. #scan 2 for 5x5x5');
           return;
         }
-        this._scan(cube);
+        this._scan(radius);
         return;
       }
       case 'inflight': {
@@ -234,10 +256,8 @@ class WebServer {
         if (args[0] && Number.isInteger(n) && n >= 1) {
           if (n > MAX_IN_FLIGHT_LIMIT) {
             say(`Bedrock drops every command beyond ${MAX_IN_FLIGHT_LIMIT} in flight, so the limit stays at ${MAX_IN_FLIGHT_LIMIT}.`);
-            this.bridge.maxInFlight = MAX_IN_FLIGHT_LIMIT;
-          } else {
-            this.bridge.maxInFlight = n;
           }
+          this.settings.update({ 'bridge.maxInFlight': Math.min(n, MAX_IN_FLIGHT_LIMIT) });
         }
         say(`Up to ${this.bridge.maxInFlight} commands are sent to Minecraft at once`
           + (args[0] ? '' : `. Usage: #inflight <1-${MAX_IN_FLIGHT_LIMIT}>`));
@@ -253,17 +273,21 @@ class WebServer {
         return;
       case 'pathfindwalk':
       case 'flypathfindwalk': {
-        // #pathfindwalk x y z [scan=15] [retries=3]
-        const opts = { scanSize: DEFAULT_SCAN_SIZE, retries: DEFAULT_RETRIES, fly: name.toLowerCase().startsWith('fly') };
+        // #pathfindwalk x y z [scan=7] [retries=3]   (scan = rescan radius)
+        const opts = {
+          scanRadius: this.settings.get('path.scanRadius'),
+          retries: this.settings.get('path.retries'),
+          fly: name.toLowerCase().startsWith('fly'),
+        };
         const coords = [];
         for (const arg of args) {
           const m = /^(scan|retries)=(\d+)$/.exec(arg);
           if (!m) coords.push(arg);
-          else if (m[1] === 'scan') opts.scanSize = Number(m[2]);
+          else if (m[1] === 'scan') opts.scanRadius = Number(m[2]);
           else opts.retries = Number(m[2]);
         }
-        if (opts.scanSize % 2 === 0 || opts.scanSize < 3 || opts.scanSize > 31) {
-          say('scan= must be an odd size from 3 to 31.');
+        if (opts.scanRadius < 1 || opts.scanRadius > MAX_SCAN_RADIUS) {
+          say(`scan= is the rescan radius, from 1 to ${MAX_SCAN_RADIUS}.`);
           return;
         }
         this.navigator.pathfindwalk(coords, opts);
@@ -286,10 +310,10 @@ class WebServer {
       case '':
         say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
           + '#probe [all] (run every read-only agent command and summarize what each returns), '
-          + '#scan [size] (identify the blocks around the agent; a size like 5 scans a 5x5x5 cube), '
+          + '#scan [radius] (identify the blocks around the agent; radius 2 scans a 5x5x5 cube), '
           + '#inflight <n> (how many commands may be outstanding at once), '
           + '#pathfind <x y z | @p> (plan a route that stays next to blocks; ~ = relative to the agent), '
-          + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=15] [retries=3] (plan and walk, '
+          + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=7] [retries=3] (plan and walk, '
           + 'rescanning on the way), #flypathfind / #flypathwalk / #flypathfindwalk (the same, flying straight), '
           + '#pathsafe on|off, #pathstop, '
           + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
@@ -302,14 +326,14 @@ class WebServer {
   }
 
   /** Scan around the agent and make the result its Sight. `quiet` logs one line instead of the layers. */
-  async _scan(cube, { quiet = false } = {}) {
+  async _scan(radius, { quiet = false } = {}) {
     if (!this.bridge.connected) {
       this._addLog('system', 'Scan needs Minecraft to be connected.');
       return null;
     }
     if (!quiet) this._addLog('system', 'Scanning around the agent...');
     try {
-      const scan = await scanAroundAgent(this.bridge, { cube });
+      const scan = await scanAroundAgent(this.bridge, { radius });
       if (quiet) {
         const { x, y, z } = scan.agent.position;
         this._addLog('system', `Scanned ${scan.cells.length} blocks around ${x} ${y} ${z} `

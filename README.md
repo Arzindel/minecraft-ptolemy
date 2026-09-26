@@ -93,11 +93,11 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | --- | --- |
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
-| `#scan` / `#scan <size>` | Identify every block around the agent: its field of view, or with a size like `5` a 5×5×5 cube centred on it (odd sizes up to 31). See [Scanning](#scanning) |
+| `#scan` / `#scan <radius>` | Identify every block around the agent: its field of view, or a cube reaching `radius` blocks out in every direction (radius 2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom. See [Scanning](#scanning) |
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
-| `#pathfindwalk <x y z \| @p> [scan=15] [retries=3]` | Plan and walk, rescanning when entering unknown territory and re-planning when something is in the way |
+| `#pathfindwalk <x y z \| @p> [scan=7] [retries=3]` | Plan and walk, rescanning when entering unknown territory and re-planning when something is in the way |
 | `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
 | `#pathsafe on\|off` | Off (default): each step is checked once, as soon as the game answers. On: wait up to 2s for the agent to arrive |
 | `#pathstop` | Stop a running walk after the current step |
@@ -151,23 +151,34 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
 - **Targets:** `x y z`, where each part can be `~` or `~n` relative to the agent, or `@p` for you.
   `@p` ends beside you at body height. A solid target means "go next to it".
 - **Planning** is an A* search over position and facing. The robot turns to face where it's going
-  (it looks better) and moves up and down without turning. Cells it hasn't seen are allowed but
-  cost a little more (optimistic planning). A target sealed in by known solid blocks is refused
-  straight away.
-- **`#pathfind` vs `#flypathfind`:** the fly version takes the shortest route through the air. The
-  plain version follows the path of least resistance for something that walks, swims and climbs:
-  entering a cell costs extra depending on its best support (every move also costs 1).
+  (it looks better) and moves up and down without turning. A target sealed in by known solid blocks
+  is refused straight away.
+- **Unseen cells are unknown**, neither air nor wall. The terrain is assumed to carry on as last seen:
+  an unseen cell costs a ground step at the walking height of the nearest scanned column, and the
+  airborne price above or below it. Every unseen cell also costs the "unseen" penalty on top.
+  `#pathfindwalk` stops and rescans before entering one, so a cliff just past the edge of Sight is
+  found and climbed down, not flown over.
+- **`#pathfind` vs `#flypathfind`:** the fly version takes the shortest route through the air (every
+  move costs 1). The plain version follows the path of least resistance for something that walks,
+  swims and climbs. Entering a cell costs by its best known support, and a cell in water always
+  costs the water price. Read the costs as "how many ground steps would it rather walk than go
+  through this". Defaults are below; they're all adjustable in the Configuration tab. Turns cost 1.
 
-  | Support | Solid block | Extra cost |
+  | Support | Solid block | Cost |
   | --- | --- | --- |
-  | Ground | directly below | 0 |
-  | Water | the cell itself is water | 1 |
-  | Wall | beside, sharing a face | 1 |
-  | Ground edge / wall diagonal | below or level, sharing an edge | 2 |
-  | Ground corner / ceiling | below, sharing only a corner / directly above | 3 |
-  | Ceiling edge | above, sharing an edge | 4 |
-  | Ceiling corner | above, sharing only a corner | 5 |
-  | Airborne | nothing around | 6 |
+  | Ground | directly below | 1 |
+  | Ground edge | below, sharing an edge | 3 |
+  | Water | the cell itself is water | 5 |
+  | Wall | beside, sharing a face | 5 |
+  | Wall edge | level, sharing an edge | 8 |
+  | Ground corner | below, sharing only a corner | 10 |
+  | Ceiling | directly above | 15 |
+  | Ceiling edge | above, sharing an edge | 20 |
+  | Ceiling corner | above, sharing only a corner | 20 |
+  | Airborne | nothing around | 40 |
+
+  When every route is expensive (say, a target up in open air), the exact search gets a time budget
+  and then falls back to a greedier one. The plan says when it's such a quick estimate.
 - **Walking:** every step has an expected pose (position and facing). After each step Ptolemy runs
   `agent getposition`, and the walk stops at the first mismatch. With `#pathsafe on` it polls for up
   to 2 seconds first, in case moves turn out not to be instant.
@@ -182,12 +193,20 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
 - **Nanny Cam:** walking paths show as cyan beads and flight paths as magenta ones. They fade as the
   robot walks them, and a finished walk leaves a faded trail. The robot's marker follows it while it walks.
 
+## Configuration
+
+The **Configuration** tab holds the tunables: the walking path costs, turn cost, unseen-cell penalty,
+the rescan radius and retries for `#pathfindwalk`, safe mode and the in-flight limit. Changes apply
+immediately, show up in every open tab, and are saved to `data/settings.json` (git-ignored), so they
+survive restarts. `#pathsafe` and `#inflight` change the same settings. Values that differ from their
+defaults are outlined, and **Reset to defaults** puts everything back.
+
 ## Nanny Cam
 
 The **Nanny Cam** tab draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
 and no libraries:
 
-- **Scan** runs a scan of the chosen size, same as `#scan`. Every new scan replaces Sight.
+- **Scan** runs a scan of the chosen radius, same as `#scan`. Every new scan replaces Sight.
 - **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
   **double-click** to reset.
 - **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
