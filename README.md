@@ -93,6 +93,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | --- | --- |
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
+| `#scan` | Identify every block around the agent (see [Scanning](#scanning)) |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
 | `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
@@ -113,6 +114,26 @@ Information panel.
 | --- | --- | --- |
 | `PTOLEMY_UI_PORT` | `3000` | Port for the WebUI (HTTP and its own WebSocket at `/ui`) |
 | `PTOLEMY_MC_PORT` | `8080` | Port Minecraft connects to with `/connect` |
+
+## Scanning
+
+In plain Bedrock, the agent's own sensing commands (`agent inspect`, `detect`, `getitem*`) succeed but
+return no data. Only `agent getposition` does. So Ptolemy senses the world with ordinary commands:
+
+1. `agent getposition` gives the agent's block position and `y-rot`, snapped to a facing:
+   `0` → Z+, `90` → X-, `±180` → Z-, `-90` → X+.
+2. For every cell in the agent's field of view, `testforblock x y z air` either matches (air) or fails
+   with "The block at X,Y,Z is Oak Log (expected: Air)", which names the block.
+
+The field of view, relative to the agent (right, up, forward), is 63 blocks:
+
+- everything within 1 block, diagonals and the agent's own cell included (in case it's standing in water),
+- widened by 1 block to each side: right −2…2, up −1…1, forward −1…1,
+- plus 2 more blocks forward: right −1…1, up −1…1, forward 2…3.
+
+`#scan` prints three top-down layers (above, level, below) from the agent's point of view. Forward
+is up the page and `[ ]` marks the agent's cell. Click the result to see every cell with its world
+and relative coordinates.
 
 ## How it works
 
