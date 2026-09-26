@@ -180,7 +180,7 @@
     li.classList.add('selected');
     el.inspectCaption.textContent = entry.kind === 'agent' ? 'AgentCommand event'
       : entry.kind === 'event' ? `${entry.commandLine} event`
-        : entry.kind === 'system' ? entry.text
+        : entry.kind === 'system' ? (entry.commandLine || entry.text)
           : entry.commandLine || 'Response';
     el.inspect.textContent = JSON.stringify(
       entry.body ?? { statusCode: entry.statusCode, statusMessage: entry.text },
