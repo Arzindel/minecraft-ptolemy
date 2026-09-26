@@ -150,7 +150,8 @@ and no libraries:
 - The robot is the yellow block. Its darker nose points the way it's facing.
 
 Air isn't drawn, and neither are blocks completely enclosed by other blocks. Water, glass and ice
-are drawn see-through. Block colours come from `public/blockColors.js`; blocks missing from that
+are drawn see-through, as is everything the robot can move through (plants, flowers, torches...).
+Block colours and the list of non-solid blocks live in `public/blocks.js`; blocks missing from the colour
 table get a stable colour derived from their name.
 
 ## How it works
