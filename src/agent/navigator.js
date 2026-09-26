@@ -282,6 +282,8 @@ class Navigator {
    * in which case the agent ends next to them rather than inside them.
    */
   async _resolveGoal(args, pose) {
+    // A ready-made goal ({ x, y, z, cells, label }), e.g. "any cell beside this block" from the tools.
+    if (args && !Array.isArray(args) && args.goal) return args.goal;
     if (args.length === 1 && /^(@p|@s|me)$/i.test(args[0])) {
       const res = await this.bridge.sendCommand('querytarget @s', { quiet: true });
       let player;

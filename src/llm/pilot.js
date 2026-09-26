@@ -295,7 +295,9 @@ class Pilot extends EventEmitter {
         const res = await this.bridge.sendCommand('querytarget @s', { quiet: true });
         const p = JSON.parse(res.body.details)[0].position;
         const [x, y, z] = [p.x, p.y, p.z].map(Math.floor);
-        parts.push(`Player: ${frame ? frame.fmt(x, y, z) : `${x} ${y} ${z}`}${inArea(x, y, z) || inArea(x, y - 1, z)}.`);
+        const rel = frame && frame.relative;
+        parts.push(`Player: ${frame ? frame.fmt(x, y, z) : `${x} ${y} ${z}`}${rel ? ` (world ${x} ${y} ${z})` : ''}`
+          + `${inArea(x, y, z) || inArea(x, y - 1, z)}.`);
       } catch { /* not important */ }
     }
     return contextBlock({ source, status: parts.join('\n'), memory: memory && memory.promptBlock(frame) });

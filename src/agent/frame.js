@@ -68,7 +68,7 @@ class Frame {
   here() {
     const { x, y, z, facing } = this.pose;
     return this.relative
-      ? `0 0 0 (you). World position ${x} ${y} ${z}, facing ${COMPASS_NAMES[facing]}: only needed for run_command`
+      ? `0 0 0 (you; world ${x} ${y} ${z}, facing ${COMPASS_NAMES[facing]})`
       : `${x} ${y} ${z}, facing ${COMPASS_NAMES[facing]} (${facingAxis(facing)})`;
   }
 
