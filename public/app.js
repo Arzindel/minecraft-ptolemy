@@ -26,7 +26,7 @@
     inspectCaption: $('inspect-caption'),
   };
 
-  const GLYPHS = { command: '›', response: '✓', error: '✗', chat: '💬', agent: '🤖', system: '·' };
+  const GLYPHS = { command: '›', response: '✓', error: '✗', chat: '💬', agent: '🤖', event: '⚡', system: '·' };
   const HISTORY_KEY = 'ptolemy.commandHistory';
   const TAB_KEY = 'ptolemy.tab';
 
@@ -178,9 +178,10 @@
   function inspect(entry, li) {
     el.log.querySelectorAll('li.selected').forEach((n) => n.classList.remove('selected'));
     li.classList.add('selected');
-    el.inspectCaption.textContent = entry.kind === 'agent'
-      ? 'AgentCommand event'
-      : entry.commandLine ? `/${entry.commandLine}` : 'Response';
+    el.inspectCaption.textContent = entry.kind === 'agent' ? 'AgentCommand event'
+      : entry.kind === 'event' ? `${entry.commandLine} event`
+        : entry.kind === 'system' ? entry.text
+          : entry.commandLine ? `/${entry.commandLine}` : 'Response';
     el.inspect.textContent = JSON.stringify(
       entry.body ?? { statusCode: entry.statusCode, statusMessage: entry.text },
       null,

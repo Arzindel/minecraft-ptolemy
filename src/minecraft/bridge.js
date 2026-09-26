@@ -17,6 +17,7 @@ const COMMAND_TIMEOUT_MS = 10000;
  *   'command'  ({ id, commandLine })                 a command was sent to the game
  *   'response' ({ id, commandLine, ok, statusCode, statusMessage, body })
  *   'event'    ({ name, body })                      a subscribed game event fired
+ *   'raw'      ({ purpose, body })                   a message we couldn't match to anything
  *   'chat'     ({ sender, message, type })           a PlayerMessage event
  *   'agent'    ({ commandName, result, body })       an AgentCommand event: the outcome of an
  *                                                    `agent ...` command (e.g. what inspect saw)
@@ -33,6 +34,9 @@ class MinecraftBridge extends EventEmitter {
     this.player = null;
     this.pending = new Map(); // requestId -> { commandLine, resolve, timer }
     this.queue = []; // { requestId, commandLine, resolve }
+    // Event subscriptions survive reconnects: they are re-sent every time the game connects.
+    this.subscriptions = new Set(['PlayerMessage', 'AgentCommand']);
+    this.subscribeRequests = new Map(); // requestId -> { purpose, eventName }
   }
 
   listen() {
@@ -89,7 +93,22 @@ class MinecraftBridge extends EventEmitter {
   }
 
   subscribe(eventName) {
-    this._send('subscribe', { eventName });
+    this.subscriptions.add(eventName);
+    this._sendSubscription('subscribe', eventName);
+  }
+
+  unsubscribe(eventName) {
+    this.subscriptions.delete(eventName);
+    this._sendSubscription('unsubscribe', eventName);
+  }
+
+  _sendSubscription(purpose, eventName) {
+    if (!this.connected) return;
+    const requestId = crypto.randomUUID();
+    this.subscribeRequests.set(requestId, { purpose, eventName });
+    // The game only answers a subscription when it fails, so forget it after a while.
+    setTimeout(() => this.subscribeRequests.delete(requestId), COMMAND_TIMEOUT_MS);
+    this._send(purpose, { eventName }, requestId);
   }
 
   // ---------------------------------------------------------------------------
@@ -121,10 +140,11 @@ class MinecraftBridge extends EventEmitter {
       this._emitStatus();
     });
 
-    this.subscribe('PlayerMessage');
-    // Agent commands only acknowledge the request in their commandResponse
-    // ("Agent inspect successful"); the actual outcome arrives later as this event.
-    this.subscribe('AgentCommand');
+    // PlayerMessage: in-game chat. AgentCommand: agent commands only acknowledge the
+    // request in their commandResponse ("Agent inspect successful"); the actual
+    // outcome is expected to arrive later as this event.
+    for (const eventName of this.subscriptions) this._sendSubscription('subscribe', eventName);
+    this.emit('log', `Subscribed to events: ${[...this.subscriptions].join(', ')}`);
     this.sendCommand('getlocalplayername').then((res) => {
       if (res.ok && res.body && typeof res.body.localplayername === 'string') {
         this.player = res.body.localplayername;
@@ -161,14 +181,31 @@ class MinecraftBridge extends EventEmitter {
     }
 
     if (header.messagePurpose === 'commandResponse' || header.messagePurpose === 'error') {
+      const sub = this.subscribeRequests.get(header.requestId);
+      if (sub) {
+        this.subscribeRequests.delete(header.requestId);
+        const ok = body.statusCode === 0 || body.statusCode === undefined;
+        if (!ok && sub.purpose === 'subscribe') this.subscriptions.delete(sub.eventName);
+        this.emit('log', `${sub.purpose} ${sub.eventName}: ${ok ? 'OK' : 'failed'}`
+          + (body.statusMessage ? ` (${body.statusMessage})` : ''));
+        return;
+      }
+
       const entry = this.pending.get(header.requestId);
-      if (!entry) return; // e.g. a subscribe acknowledgement
+      if (!entry) {
+        // Late (already timed out) or unsolicited: still worth seeing.
+        this.emit('raw', { purpose: header.messagePurpose, body });
+        return;
+      }
       this.pending.delete(header.requestId);
       clearTimeout(entry.timer);
       const code = typeof body.statusCode === 'number' ? body.statusCode : -1;
       entry.resolve(this._result(header.requestId, entry.commandLine, code, body.statusMessage, body));
       this._pump();
+      return;
     }
+
+    this.emit('raw', { purpose: header.messagePurpose, body });
   }
 
   _pump() {

@@ -80,6 +80,22 @@ The leading `/` is optional.
 found something, arrives shortly after as an `AgentCommand` game event. Ptolemy subscribes to it
 automatically and shows it as a 🤖 line in the console.
 
+### Console commands
+
+Lines starting with `#` are handled by Ptolemy instead of being sent to the game:
+
+| Command | What it does |
+| --- | --- |
+| `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
+| `#unsubscribe <Event> [Event...]` | Stop receiving those events |
+| `#subscriptions` | List the current subscriptions, which are re-sent whenever Minecraft reconnects |
+| `#help` | Show this list |
+
+Subscribing isn't a Minecraft command (there's no `/subscribe`). It's a different kind of WebSocket
+message, which is why it lives here. If the game rejects a subscription, the console says so. Any
+message from the game that Ptolemy can't match to a command or event is logged too, so nothing
+arrives unnoticed.
+
 Click a response line to see the raw JSON the game sent back in the
 Information panel.
 
