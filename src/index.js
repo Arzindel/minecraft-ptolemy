@@ -28,6 +28,11 @@ async function main() {
   console.log('  Ptolemy is running');
   console.log(`  WebUI:        http://localhost:${UI_PORT}`);
   console.log(`  In Minecraft: /connect localhost:${MC_PORT}`);
+  if (process.argv.includes('--watched')) { // set by `npm run start`, which runs under node --watch
+    console.log('');
+    console.log('  Watching for code changes: Ptolemy restarts itself after a git pull.');
+    console.log('  Minecraft is disconnected by a restart, so run /connect again afterwards.');
+  }
   console.log('');
 
   const shutdown = () => {

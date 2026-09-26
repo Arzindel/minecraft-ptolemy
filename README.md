@@ -40,7 +40,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 
 ## Requirements
 
-- **Node.js 18 or newer**
+- **Node.js 18.11 or newer** (for `--watch`)
 - **Minecraft Bedrock Edition**, unmodded. No add-ons or behaviour packs are required.
 - A world with **cheats enabled**.
 - In Minecraft: `Settings → General → Require Encrypted Websockets` turned **off**.
@@ -54,6 +54,11 @@ The LLM reasons over the stored map, and the game is only asked about what might
 npm install
 npm run start
 ```
+
+`npm run start` runs in watch mode. When code under `src/` changes (after a `git pull`, say), Ptolemy
+restarts itself. Minecraft is the side that opens the connection, so after a restart you need to run
+`/connect` in the game again. The WebUI reconnects on its own. If you'd rather not have automatic
+restarts, use `npm run start:once`. If a pull adds new dependencies, you still need `npm install`.
 
 Then:
 

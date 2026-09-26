@@ -102,7 +102,8 @@ class WebServer {
     // start-up, so after a `git pull` the page can be newer than the server behind it.
     if (codeChangedSinceStart()) {
       this._addLog('system', 'Ptolemy\'s server code changed since it was started. '
-        + 'Stop it and run `npm run start` again, or new features may not work.');
+        + 'Restart it (`npm run start` does this automatically; `npm run start:once` does not), '
+        + 'or new features may not work.');
     }
 
     ws.on('message', (data) => {
