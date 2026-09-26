@@ -178,8 +178,27 @@ class Navigator {
     }
   }
 
-  stop() {
+  /**
+   * Execute a few hand-made steps ({ command, expect, enters }) with the same checks as a path walk.
+   * For the LLM tools; resolves to the walk result, or { ok: false, reason } if the robot is busy.
+   */
+  async runSteps(steps) {
+    if (!this.bridge.connected) return { ok: false, reason: 'Minecraft is not connected' };
+    if (this.busy) return { ok: false, reason: 'the robot is already walking a path' };
+    this.busy = true;
+    this.stopRequested = false;
+    try {
+      return await this._walk(steps);
+    } catch (err) {
+      return { ok: false, reason: err.message };
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  stop({ quiet = false } = {}) {
     if (!this.busy) {
+      if (quiet) return;
       this.log('Nothing is running.');
       return;
     }

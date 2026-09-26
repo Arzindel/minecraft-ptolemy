@@ -6,6 +6,7 @@ const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const FILE = path.join(DATA_DIR, 'settings.json');
+const { PROVIDERS, TOOL_MODES } = require('./llm/providers');
 
 /**
  * Everything tunable from the Configuration tab (and some console commands), with defaults,
@@ -48,6 +49,63 @@ const SCHEMA = [
       { key: 'path.safe', label: 'Safe mode (#pathsafe)', type: 'boolean', default: true,
         help: 'If the agent isn\'t where it should be after a step, keep checking for up to 2s before '
           + 'calling it a failure. Costs nothing when steps succeed straight away.' },
+    ],
+  },
+  {
+    group: 'LLM (Automatic tab)',
+    help: 'Which language model drives the robot. All three backends speak the OpenAI chat API; '
+      + 'only the fields of the selected provider are shown. Leave the model empty to use whatever '
+      + 'the server has loaded (LM Studio, text-generation-webui).',
+    fields: [
+      { key: 'llm.provider', label: 'Provider', type: 'select', default: 'lmstudio',
+        options: PROVIDERS.map((p) => ({ value: p.id, label: p.label })) },
+      ...PROVIDERS.flatMap((p) => [
+        { key: `llm.${p.id}.baseUrl`, label: 'Server URL', type: 'text', default: p.baseUrl,
+          showIf: { key: 'llm.provider', value: p.id }, help: p.urlHelp },
+        { key: `llm.${p.id}.apiKey`, label: 'API key', type: 'secret', default: '',
+          showIf: { key: 'llm.provider', value: p.id }, help: p.keyHelp },
+        { key: `llm.${p.id}.model`, label: 'Model', type: 'text', default: p.model, models: true,
+          showIf: { key: 'llm.provider', value: p.id }, help: p.modelHelp },
+        { key: `llm.${p.id}.toolMode`, label: 'Tool calling', type: 'select', default: p.toolMode,
+          options: TOOL_MODES, showIf: { key: 'llm.provider', value: p.id },
+          help: 'Native: the API\'s own tool calls. Text: tools are described in the prompt and the model '
+            + 'writes <tool_call> blocks (works with any model). Auto: native, falling back to text if the '
+            + 'server rejects tools.' },
+      ]),
+      { key: 'llm.temperature', label: 'Temperature', default: 0.3, min: 0, max: 2, step: 0.05 },
+      { key: 'llm.maxTokens', label: 'Max tokens per reply', default: 2048, min: 64, max: 32768, step: 64,
+        help: 'Reasoning models spend tokens thinking before they act, so don\'t set this too low.' },
+      { key: 'llm.maxSteps', label: 'Max model calls per request', default: 25, min: 1, max: 200, step: 1,
+        help: 'A request stops after this many round trips to the model, even if it isn\'t finished.' },
+      { key: 'llm.timeout', label: 'Model timeout (seconds)', default: 180, min: 5, max: 1800, step: 5 },
+      { key: 'llm.historyChars', label: 'Conversation budget (characters)', default: 16000, min: 2000, max: 400000, step: 1000,
+        help: 'Older turns are dropped (and old tool results shortened) to keep the conversation under this size. '
+          + 'About 4 characters per token: lower it for models with a small context window.' },
+      { key: 'llm.toolResultChars', label: 'Max characters per tool result', default: 3000, min: 200, max: 50000, step: 100 },
+      { key: 'llm.instructions', label: 'Extra instructions', type: 'textarea', default: '',
+        help: 'Added to the end of the system prompt, e.g. "Always build with Cobblestone from slot 1."' },
+    ],
+  },
+  {
+    group: 'In-game chat',
+    fields: [
+      { key: 'chat.enabled', label: 'Take requests from chat', type: 'boolean', default: true,
+        help: 'Chat messages starting with the name below go to the LLM, e.g. "ptolemy, come here". '
+          + '"ptolemy stop" stops it.' },
+      { key: 'chat.name', label: 'Name to call it by', type: 'text', default: 'ptolemy' },
+      { key: 'chat.replies', label: 'Answer in chat', type: 'boolean', default: true,
+        help: 'Send the model\'s final answer (and errors) back to chat for requests that came from chat.' },
+    ],
+  },
+  {
+    group: 'Tools and MCP',
+    fields: [
+      { key: 'tools.allowRaw', label: 'Allow raw commands (run_command)', type: 'boolean', default: true,
+        help: 'Lets the LLM and MCP clients run any Minecraft command, not just the robot tools.' },
+      { key: 'tools.allowDestructive', label: 'Allow destroy / attack', type: 'boolean', default: true },
+      { key: 'mcp.enabled', label: 'MCP server at /mcp', type: 'boolean', default: true,
+        help: 'Exposes the same tools to MCP clients (Claude Desktop, LM Studio, ...) over HTTP on this '
+          + 'WebUI\'s port, or over stdio with `npm run mcp`.' },
     ],
   },
   {
@@ -97,8 +155,16 @@ class Settings extends EventEmitter {
     return this.update(Object.fromEntries([...FIELDS.values()].map((f) => [f.key, f.default])));
   }
 
+  /** For the browser: secrets are never sent back, only whether they are set. */
   message() {
-    return { type: 'settings', schema: SCHEMA, values: this.values };
+    const values = { ...this.values };
+    const secretsSet = {};
+    for (const field of FIELDS.values()) {
+      if (field.type !== 'secret') continue;
+      secretsSet[field.key] = Boolean(values[field.key]);
+      values[field.key] = '';
+    }
+    return { type: 'settings', schema: SCHEMA, values, secretsSet };
   }
 
   _apply(patch) {
@@ -109,6 +175,13 @@ class Settings extends EventEmitter {
       let value;
       if (field.type === 'boolean') {
         value = raw === true || raw === 'true';
+      } else if (field.type === 'select') {
+        value = String(raw);
+        if (!field.options.some((o) => o.value === value)) continue;
+      } else if (field.type === 'text' || field.type === 'secret' || field.type === 'textarea') {
+        value = String(raw ?? '');
+        if (field.type !== 'textarea') value = value.trim();
+        value = value.slice(0, field.type === 'textarea' ? 8000 : 500);
       } else {
         value = Number(raw);
         if (!Number.isFinite(value)) continue;

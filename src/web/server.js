@@ -11,6 +11,11 @@ const { Navigator, pathMessage } = require('../agent/navigator');
 const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
+const { createToolbox, sayInChat } = require('../tools');
+const { Pilot } = require('../llm/pilot');
+const { listModels } = require('../llm/client');
+const { providerConfig } = require('../llm/providers');
+const { McpServer } = require('../mcp/server');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const SRC_DIR = path.join(__dirname, '..');
@@ -65,7 +70,32 @@ class WebServer {
     });
     this.nextLogId = 1;
 
-    this.http = http.createServer((req, res) => this._serveStatic(req, res));
+    // The robot's tools, shared by Automatic mode (the pilot) and MCP clients.
+    this.toolbox = createToolbox({
+      bridge,
+      world: this.world,
+      navigator: this.navigator,
+      settings: this.settings,
+      scan: (radius, opts) => this._scan(radius, opts),
+      log: (text) => this._addLog('system', text),
+      sight: () => this.sight,
+    });
+    this.pilot = new Pilot({ settings: this.settings, toolbox: this.toolbox, bridge });
+    this.pilot.on('entry', (entry) => this._broadcast({ type: 'pilotEntry', entry }));
+    this.pilot.on('cleared', () => this._broadcast({ type: 'pilotTranscript', entries: [] }));
+    this.pilot.on('state', (state) => this._broadcast(state));
+    this.pilot.on('reply', ({ text, source }) => {
+      if (source === 'chat' && this.settings.get('chat.replies')) sayInChat(bridge, this.settings, text);
+    });
+    this.settings.on('change', (changed) => {
+      if (Object.keys(changed).some((k) => k.startsWith('llm.'))) this._broadcast(this.pilot.state());
+    });
+    this.mcp = new McpServer({ toolbox: this.toolbox, settings: this.settings, bridge });
+
+    this.http = http.createServer((req, res) => {
+      if (new URL(req.url, 'http://localhost').pathname === '/mcp') this.mcp.handleHttp(req, res);
+      else this._serveStatic(req, res);
+    });
     this.wss = new WebSocket.Server({ noServer: true });
 
     this.http.on('upgrade', (req, socket, head) => {
@@ -91,7 +121,10 @@ class WebServer {
       });
       this._broadcastStatus();
     });
-    bridge.on('chat', ({ sender, message }) => this._addLog('chat', message, { sender }));
+    bridge.on('chat', ({ sender, message }) => {
+      this._addLog('chat', message, { sender });
+      this._chatRequest(sender, message);
+    });
     // Moving the agent by hand invalidates stored paths (the walker's own commands are quiet).
     bridge.on('response', (res) => {
       if (!res.ok || !/^agent (move|turn|tp|teleport)\b/i.test(res.commandLine)) return;
@@ -139,6 +172,8 @@ class WebServer {
     ws.send(JSON.stringify(this.settings.message()));
     ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
     ws.send(JSON.stringify(pathMessage('fly', this.navigator.paths.fly)));
+    ws.send(JSON.stringify({ type: 'pilotTranscript', entries: this.pilot.transcript }));
+    ws.send(JSON.stringify(this.pilot.state()));
 
     // The WebUI is re-read from disk on every page load, but the server code only on
     // start-up, so after a `git pull` the page can be newer than the server behind it.
@@ -182,6 +217,18 @@ class WebServer {
           break;
         case 'disconnect':
           this.bridge.disconnect();
+          break;
+        case 'pilotSend':
+          this.pilot.send(msg.text, { source: 'ui' });
+          break;
+        case 'pilotStop':
+          this.pilot.stop();
+          break;
+        case 'pilotReset':
+          this.pilot.reset();
+          break;
+        case 'llmModels':
+          this._listModels(ws, msg.provider);
           break;
         case 'clearLog':
           this.log = [];
@@ -324,6 +371,41 @@ class WebServer {
         return;
       default:
         say(`Unknown console command "#${name}". Try #help.`);
+    }
+  }
+
+  /**
+   * "ptolemy, come here" in chat becomes a request for the pilot; "ptolemy stop" stops it.
+   * The robot's own chat lines (tellraw) never start with its bare name, so it can't talk to itself.
+   */
+  _chatRequest(sender, message) {
+    const name = (this.settings.get('chat.name') || '').trim();
+    if (!this.settings.get('chat.enabled') || !name || typeof message !== 'string') return;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`^\\s*[!@]?${escaped}\\b[\\s,:;!.-]*(.*)$`, 'is').exec(message);
+    if (!m) return;
+    const text = m[1].trim();
+    if (/^(stop|halt|cancel)[.!]*$/i.test(text)) {
+      const stopped = this.pilot.stop();
+      if (this.settings.get('chat.replies')) sayInChat(this.bridge, this.settings, stopped ? 'Stopping.' : 'I wasn\'t doing anything.');
+      return;
+    }
+    if (!text) {
+      if (this.settings.get('chat.replies')) sayInChat(this.bridge, this.settings, `Yes? Say "${name}, <what to do>".`);
+      return;
+    }
+    this.pilot.send(text, { source: 'chat', sender });
+  }
+
+  async _listModels(ws, providerId) {
+    const config = providerConfig(this.settings, providerId);
+    const reply = (fields) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'llmModels', provider: config.id, ...fields }));
+    };
+    try {
+      reply({ models: await listModels(config) });
+    } catch (err) {
+      reply({ error: err.message });
     }
   }
 

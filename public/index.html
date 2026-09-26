@@ -44,13 +44,21 @@
       </nav>
 
       <div class="tab-panel" data-panel="automatic" hidden>
-        <div class="placeholder">
-          <h2>Automatic mode</h2>
-          <p>
-            This is where an LLM (NVIDIA Build, text-generation-webui or LM Studio) will drive the agent
-            from instructions typed here or sent through in-game chat.
-          </p>
-          <p class="muted">Not wired up yet. Use Manual mode for now.</p>
+        <div class="pilot">
+          <div class="console-toolbar">
+            <span class="console-title">Automatic</span>
+            <span class="pilot-state" id="pilot-state" data-phase="idle">Idle</span>
+            <span class="pilot-model muted small" id="pilot-model" title="Change it in the Configuration tab"></span>
+            <button class="btn btn-ghost btn-small" id="pilot-stop" type="button" disabled>Stop</button>
+            <button class="btn btn-ghost btn-small" id="pilot-reset" type="button" title="Forget the conversation">New conversation</button>
+          </div>
+          <ol class="pilot-log" id="pilot-log" aria-live="polite"></ol>
+          <form class="command-form pilot-form" id="pilot-form" autocomplete="off">
+            <textarea id="pilot-input" rows="2" placeholder="Tell the robot what to do, e.g. &quot;come to me&quot; or &quot;dig a 3x3 hole in front of you&quot;"></textarea>
+            <button class="btn btn-primary" type="submit">Send</button>
+          </form>
+          <p class="hint">Enter to send, Shift+Enter for a new line. Players can also type <code id="pilot-chat-hint">ptolemy, come here</code> in the game chat.
+            MCP clients can connect to <code id="pilot-mcp-url">http://localhost:3000/mcp</code>.</p>
         </div>
       </div>
 
@@ -129,5 +137,6 @@
   <script src="blocks.js"></script>
   <script src="nannycam.js"></script>
   <script src="config.js"></script>
+  <script src="automatic.js"></script>
 </body>
 </html>

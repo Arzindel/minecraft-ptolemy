@@ -408,3 +408,134 @@ code, pre, input { font-family: var(--mono); }
   border-radius: 6px;
   padding: 3px 6px;
 }
+
+.config-row select,
+.config-row input[type="text"],
+.config-row input[type="password"],
+.config-row textarea {
+  font: 13px var(--mono);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+.config-row select:focus,
+.config-row input[type="text"]:focus,
+.config-row input[type="password"]:focus,
+.config-row textarea:focus { outline: none; border-color: var(--accent); }
+.config-row select.changed, .config-row textarea.changed { border-color: var(--warn); }
+
+/* Text fields (URLs, model names) need more room than numbers. */
+.config-row:has(input[type="text"]), .config-row:has(input[type="password"]), .config-row:has(select) {
+  grid-template-columns: minmax(0, 320px) minmax(0, 360px) auto;
+}
+
+.config-row-wide { grid-template-columns: minmax(0, 320px) minmax(0, 1fr); }
+.config-row-wide textarea { resize: vertical; font-family: var(--sans); }
+
+/* --- Automatic ---------------------------------------------------------- */
+
+.pilot {
+  flex: 1;
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.pilot .console-toolbar { flex-wrap: wrap; }
+.pilot .console-toolbar .console-title { flex: none; }
+.pilot-model { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pilot-state {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.pilot-state[data-phase="thinking"] { color: var(--chat); border-color: var(--chat); }
+.pilot-state[data-phase="tool"] { color: var(--warn); border-color: var(--warn); }
+.pilot-state[data-phase="stopping"] { color: var(--danger); border-color: var(--danger); }
+
+.pilot-log {
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pilot-log li { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; }
+.pilot-log .pilot-who { color: var(--muted); font-size: 12px; padding-top: 2px; text-align: right; }
+.pilot-log .pilot-text { white-space: pre-wrap; word-break: break-word; }
+
+.pilot-log .pilot-user .pilot-text { font-weight: 600; }
+.pilot-log .pilot-user { margin-top: 8px; }
+.pilot-log .pilot-assistant .pilot-who { color: var(--accent); }
+.pilot-log .pilot-error .pilot-who, .pilot-log .pilot-error .pilot-text { color: var(--danger); }
+.pilot-log .pilot-info .pilot-text { color: var(--muted); font-style: italic; font-size: 12px; }
+
+.pilot-log .pilot-tool, .pilot-log .pilot-thinking { display: block; padding-left: 120px; }
+
+.pilot-log details summary {
+  cursor: pointer;
+  font: 12px var(--mono);
+  color: var(--warn);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pilot-log .pilot-thinking summary { color: var(--muted); font-family: var(--sans); font-style: italic; }
+.pilot-log .pilot-tool.failed summary { color: var(--danger); }
+.pilot-log .pilot-preview { color: var(--muted); margin-left: 10px; }
+.pilot-log details[open] .pilot-preview { display: none; }
+
+.pilot-log details pre {
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.pilot-form { align-items: stretch; }
+
+.pilot-form textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 42px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: 14px/1.4 var(--sans);
+  outline: none;
+}
+
+.pilot-form textarea:focus { border-color: var(--accent); }
+
+@media (max-width: 700px) {
+  .pilot-log li { grid-template-columns: 1fr; gap: 0; }
+  .pilot-log .pilot-who { text-align: left; }
+  .pilot-log .pilot-tool, .pilot-log .pilot-thinking { padding-left: 0; }
+}

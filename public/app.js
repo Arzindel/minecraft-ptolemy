@@ -69,7 +69,11 @@
       case 'path':
       case 'agent':
       case 'settings':
-        // For the Nanny Cam and the Configuration tab.
+      case 'pilot':
+      case 'pilotEntry':
+      case 'pilotTranscript':
+      case 'llmModels':
+        // For the Nanny Cam, the Automatic tab and the Configuration tab.
         document.dispatchEvent(new CustomEvent(`ptolemy:${msg.type}`, { detail: msg }));
         break;
       default:

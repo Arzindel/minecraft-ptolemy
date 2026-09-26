@@ -29,6 +29,16 @@ class WorldKnowledge {
     }
   }
 
+  /** One cell seen outside a scan (e.g. after the robot broke or placed a block). */
+  setBlock(x, y, z, block) {
+    if (!block || block.startsWith('unknown')) return;
+    const k = key(x, y, z);
+    this.sight.set(k, block);
+    this.blocked.delete(k);
+    this._bounds = null;
+    this._surfaces.clear();
+  }
+
   markBlocked(x, y, z) {
     this.blocked.add(key(x, y, z));
     this._surfaces.clear();
