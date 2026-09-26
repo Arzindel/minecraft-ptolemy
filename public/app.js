@@ -65,6 +65,9 @@
       case 'log':
         appendLog(msg.entry);
         break;
+      case 'sight':
+        document.dispatchEvent(new CustomEvent('ptolemy:sight', { detail: msg }));
+        break;
       default:
         break;
     }
@@ -236,6 +239,7 @@
     document.querySelectorAll('.tab-panel').forEach((p) => { p.hidden = p.dataset.panel !== name; });
     try { localStorage.setItem(TAB_KEY, name); } catch { /* ignore */ }
     if (name === 'manual') el.input.focus();
+    document.dispatchEvent(new CustomEvent('ptolemy:tab', { detail: name }));
   }
 
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
@@ -243,6 +247,9 @@
   let initialTab = 'manual';
   try { initialTab = localStorage.getItem(TAB_KEY) || 'manual'; } catch { /* ignore */ }
   selectTab(initialTab);
+
+  // Shared with the other scripts on the page (e.g. the Nanny Cam's Scan button).
+  window.ptolemy = { send };
 
   connect();
 })();
