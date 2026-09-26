@@ -1,6 +1,6 @@
 'use strict';
 
-const { isSolid } = require('../../public/blocks');
+const { isSolid, blockId } = require('../../public/blocks');
 
 const key = (x, y, z) => `${x},${y},${z}`;
 
@@ -36,6 +36,11 @@ class WorldKnowledge {
     const block = this.sight.get(k);
     if (block === undefined) return 'unknown';
     return isSolid(block) ? 'solid' : 'free';
+  }
+
+  isWater(x, y, z) {
+    const block = this.sight.get(key(x, y, z));
+    return block !== undefined && /water/.test(blockId(block));
   }
 
   /** Bounding box of what's known, or null. */

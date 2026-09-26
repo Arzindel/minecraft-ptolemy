@@ -8,6 +8,7 @@ const WebSocket = require('ws');
 const { scanAroundAgent, formatScan } = require('../agent/scan');
 const { WorldKnowledge } = require('../agent/world');
 const { Navigator, pathMessage, DEFAULT_SCAN_SIZE, DEFAULT_RETRIES } = require('../agent/navigator');
+const { getAgentPose, facingFromRotation } = require('../agent/pose');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
@@ -78,6 +79,11 @@ class WebServer {
       this._broadcastStatus();
     });
     bridge.on('chat', ({ sender, message }) => this._addLog('chat', message, { sender }));
+    // Moving the agent by hand invalidates stored paths (the walker's own commands are quiet).
+    bridge.on('response', (res) => {
+      if (!res.ok || !/^agent (move|turn|tp|teleport)\b/i.test(res.commandLine)) return;
+      getAgentPose(bridge).then((pose) => this.navigator.agentMoved(pose), () => {});
+    });
     bridge.on('event', ({ name, body }) => {
       if (name === 'PlayerMessage' || name === 'AgentCommand') return; // logged above/below
       this._addLog('event', name || '(unnamed event)', { commandLine: name, body });
@@ -117,7 +123,8 @@ class WebServer {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
     if (this.sight) ws.send(JSON.stringify(this.sight));
-    ws.send(JSON.stringify(pathMessage(this.navigator.path)));
+    ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
+    ws.send(JSON.stringify(pathMessage('fly', this.navigator.paths.fly)));
 
     // The WebUI is re-read from disk on every page load, but the server code only on
     // start-up, so after a `git pull` the page can be newer than the server behind it.
@@ -242,8 +249,7 @@ class WebServer {
         return;
       case 'pathwalk':
       case 'flypathwalk':
-        // Walking a stored path is the same whichever way it was planned.
-        this.navigator.pathwalk();
+        this.navigator.pathwalk({ fly: name.toLowerCase().startsWith('fly') });
         return;
       case 'pathfindwalk':
       case 'flypathfindwalk': {
@@ -311,8 +317,10 @@ class WebServer {
       } else {
         this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
       }
-      // Each scan replaces the robot's Sight.
+      // Each scan replaces the robot's Sight, and tells us where the agent is.
       this.world.setSight(scan);
+      const { x, y, z } = scan.agent.position;
+      this.navigator.agentMoved({ x, y, z, facing: facingFromRotation(scan.agent.yRot) });
       this.sight = sightMessage(scan);
       this._broadcast(this.sight);
       return scan;

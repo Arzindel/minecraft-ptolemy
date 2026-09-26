@@ -154,9 +154,20 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   (it looks better) and moves up and down without turning. Cells it hasn't seen are allowed but
   cost a little more (optimistic planning). A target sealed in by known solid blocks is refused
   straight away.
-- **`#pathfind` vs `#flypathfind`:** the plain version strongly prefers cells that touch a block
-  (diagonals included), so the robot walks along the ground and climbs walls like it has legs. The fly
-  version takes the shortest route through the air.
+- **`#pathfind` vs `#flypathfind`:** the fly version takes the shortest route through the air. The
+  plain version follows the path of least resistance for something that walks, swims and climbs:
+  entering a cell costs extra depending on its best support (every move also costs 1).
+
+  | Support | Solid block | Extra cost |
+  | --- | --- | --- |
+  | Ground | directly below | 0 |
+  | Water | the cell itself is water | 1 |
+  | Wall | beside, sharing a face | 1 |
+  | Ground edge / wall diagonal | below or level, sharing an edge | 2 |
+  | Ground corner / ceiling | below, sharing only a corner / directly above | 3 |
+  | Ceiling edge | above, sharing an edge | 4 |
+  | Ceiling corner | above, sharing only a corner | 5 |
+  | Airborne | nothing around | 6 |
 - **Walking:** every step has an expected pose (position and facing). After each step Ptolemy runs
   `agent getposition`, and the walk stops at the first mismatch. With `#pathsafe on` it polls for up
   to 2 seconds first, in case moves turn out not to be instant.
@@ -164,8 +175,12 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   re-plans. Those rescans are budgeted at ⌈1.5 × distance ÷ scan radius⌉, so a robot trying to get
   into a closed box gives up. When a step fails (someone closed the door), it marks that cell as
   blocked, rescans and re-plans. That counts as a retry, and it hard-stops after `retries` failures.
-- **Nanny Cam:** the planned route shows as cyan beads, which fade as the robot walks them. The
-  robot's marker follows it while it walks.
+- **Stored paths:** walking and flight paths are stored separately (`#pathwalk` walks the one from
+  `#pathfind`, `#flypathwalk` the one from `#flypathfind`). A stored path is only valid while the
+  agent is at its start. It's dropped as soon as the agent moves (by hand, by a walk of the other
+  path, or as seen by a scan), and it's used up once walked.
+- **Nanny Cam:** walking paths show as cyan beads and flight paths as magenta ones. They fade as the
+  robot walks them, and a finished walk leaves a faded trail. The robot's marker follows it while it walks.
 
 ## Nanny Cam
 

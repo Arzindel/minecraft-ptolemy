@@ -6,10 +6,17 @@ const { FORWARD, turnLeft, turnRight } = require('./pose');
 // so known routes win when they're about as short, but unknown cells are still allowed
 // (optimistic planning: the walker rescans before entering them).
 const UNKNOWN_PENALTY = 0.5;
-// Ground-hugging mode: entering a cell with no solid block anywhere around it (diagonals included)
-// costs this much extra, so the robot walks along surfaces like it has legs, and only floats when
-// that's much shorter (crossing a gap, starting mid-air).
-const FLOATING_PENALTY = 6;
+// Walking mode: entering a cell costs extra depending on what holds the robot up there, as if it
+// walked, swam and climbed. A cell takes the cost of its best support; every move still costs 1.
+const SUPPORT = { ground: 0, water: 1, wall: 1, groundEdge: 2, wallDiagonal: 2, groundCorner: 3,
+  ceiling: 3, ceilingEdge: 4, ceilingCorner: 5, airborne: 6 };
+// Support category of a solid neighbour at offset (dx, dy, dz), by how much it touches the cell.
+function supportFrom(dx, dy, dz) {
+  const sideways = Math.abs(dx) + Math.abs(dz);
+  if (dy < 0) return ['ground', 'groundEdge', 'groundCorner'][sideways];
+  if (dy > 0) return ['ceiling', 'ceilingEdge', 'ceilingCorner'][sideways];
+  return sideways === 1 ? 'wall' : 'wallDiagonal';
+}
 const MAX_EXPANSIONS = 400000;
 const SEARCH_MARGIN = 32;
 const WORLD_MIN_Y = -64;
@@ -59,21 +66,24 @@ function planPath(world, start, goal, { hug = false } = {}) {
     && z >= lo[2] - SEARCH_MARGIN && z <= hi[2] + SEARCH_MARGIN
     && y >= Math.max(WORLD_MIN_Y, lo[1] - SEARCH_MARGIN) && y <= Math.min(WORLD_MAX_Y, hi[1] + SEARCH_MARGIN);
 
-  // Is there something solid (or possibly solid, if unknown) touching this cell?
-  const touchCache = new Map();
-  const touchesSomething = (x, y, z) => {
+  // Extra cost of standing in a cell, from its best support. Unknown neighbours count as solid
+  // (optimistic, like unknown cells themselves); the walker rescans before relying on them.
+  const supportCache = new Map();
+  const supportCost = (x, y, z) => {
     const k = `${x},${y},${z}`;
-    if (touchCache.has(k)) return touchCache.get(k);
-    let found = false;
-    for (let dx = -1; dx <= 1 && !found; dx++) {
-      for (let dy = -1; dy <= 1 && !found; dy++) {
-        for (let dz = -1; dz <= 1 && !found; dz++) {
-          if ((dx || dy || dz) && world.state(x + dx, y + dy, z + dz) !== 'free') found = true;
+    if (supportCache.has(k)) return supportCache.get(k);
+    let best = world.isWater(x, y, z) ? SUPPORT.water : SUPPORT.airborne;
+    for (let dx = -1; dx <= 1 && best > 0; dx++) {
+      for (let dy = -1; dy <= 1 && best > 0; dy++) {
+        for (let dz = -1; dz <= 1 && best > 0; dz++) {
+          if ((dx || dy || dz) && world.state(x + dx, y + dy, z + dz) !== 'free') {
+            best = Math.min(best, SUPPORT[supportFrom(dx, dy, dz)]);
+          }
         }
       }
     }
-    touchCache.set(k, found);
-    return found;
+    supportCache.set(k, best);
+    return best;
   };
 
   const stateKey = (x, y, z, f) => `${x},${y},${z},${f}`;
@@ -107,7 +117,7 @@ function planPath(world, start, goal, { hug = false } = {}) {
         const state = world.state(x, y, z);
         if (state === 'solid') continue;
         if (state === 'unknown') cost += UNKNOWN_PENALTY;
-        if (hug && !touchesSomething(x, y, z)) cost += FLOATING_PENALTY;
+        if (hug) cost += supportCost(x, y, z);
       }
       const nk = stateKey(x, y, z, facing);
       if (bestCost.has(nk) && bestCost.get(nk) <= cost) continue;
@@ -223,4 +233,4 @@ function cellsAround(x, y, z) {
   return cells;
 }
 
-module.exports = { planPath, summarizeSteps, cellsAround };
+module.exports = { planPath, summarizeSteps, cellsAround, SUPPORT, supportFrom };

@@ -16,8 +16,8 @@
   const scanButton = $('cam-scan');
 
   const AGENT_COLOR = [0.95, 0.76, 0.2, 1];
-  const PATH_COLOR = [0.2, 0.85, 0.95, 1];
-  const PATH_DONE_COLOR = [0.2, 0.85, 0.95, 0.3];
+  // Walking paths are cyan, flight paths magenta; walked cells and finished trails fade.
+  const PATH_COLORS = { walk: [0.2, 0.85, 0.95], fly: [0.95, 0.35, 0.85] };
   const TRANSLUCENT_ALPHA = 0.45;
 
   const gl = canvas.getContext('webgl2', { antialias: true });
@@ -179,7 +179,8 @@
   // --- Scene state -------------------------------------------------------------
 
   let sight = null;
-  let path = []; // [[x, y, z], ...] cells of the current planned route, starting at the robot
+  // Planned routes by kind: { cells: [[x, y, z], ...] starting at the robot, trail: already walked }
+  const paths = { walk: { cells: [], trail: false }, fly: { cells: [], trail: false } };
   let agentPos = [0, 0, 0];
   let visible = new Map(); // "x,y,z" -> block name, for hover lookups
   const camera = { yaw: Math.PI / 4, pitch: 0.6, distance: 28 };
@@ -233,14 +234,16 @@
       ax + 0.35 + fx * 0.5, ay + 0.45, az + 0.35 + fz * 0.5, 0.3, ...AGENT_COLOR.map((c, i) => (i < 3 ? c * 0.6 : c)),
     ]);
 
-    // The planned route: a bead per cell, already-walked cells faded.
-    const at = path.findIndex(([x, y, z]) => x === ax && y === ay && z === az);
+    // Planned routes: a bead per cell, already-walked cells faded.
     const beads = [];
-    path.forEach(([x, y, z], i) => {
-      if (i === 0 && at === -1) return; // start of a path the robot has left
-      const color = at !== -1 && i <= at ? PATH_DONE_COLOR : PATH_COLOR;
-      beads.push(x + 0.375, y + 0.375, z + 0.375, 0.25, ...color);
-    });
+    for (const [kind, { cells, trail }] of Object.entries(paths)) {
+      const at = cells.findIndex(([x, y, z]) => x === ax && y === ay && z === az);
+      cells.forEach(([x, y, z], i) => {
+        if (x === ax && y === ay && z === az) return; // don't draw inside the robot
+        const walked = trail || (at !== -1 && i <= at);
+        beads.push(x + 0.375, y + 0.375, z + 0.375, 0.25, ...PATH_COLORS[kind], walked ? 0.25 : 1);
+      });
+    }
     upload(batches.path, beads);
 
     info.textContent = `${sight.scanned.toLocaleString()} blocks scanned at ${ax} ${ay} ${az}, `
@@ -409,7 +412,8 @@
   });
 
   document.addEventListener('ptolemy:path', (ev) => {
-    path = ev.detail.cells;
+    const { kind = 'walk', cells, trail = false } = ev.detail;
+    paths[kind] = { cells, trail };
     rebuild();
   });
 
