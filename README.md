@@ -94,7 +94,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
 | `#scan` / `#scan <size>` | Identify every block around the agent: its field of view, or with a size like `5` a 5×5×5 cube centred on it (odd sizes up to 31). See [Scanning](#scanning) |
-| `#inflight <n>` | How many commands may be outstanding at once (default 50). Bedrock reportedly drops requests beyond about 100; dropped ones show up as `?` "No response after 10s" in a scan |
+| `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
 | `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
@@ -149,7 +149,7 @@ and relative coordinates.
 - **`src/minecraft/bridge.js`** is the WebSocket server the game connects to. It wraps every command
   in Bedrock's `commandRequest` envelope, matches each `commandResponse` to its request by
   `requestId`, and returns a promise per command. It caps how many commands are in flight, because
-  Bedrock silently drops requests beyond about 100. It also times out commands that get no answer
+  Bedrock silently drops every request beyond 100 in flight. It also times out commands that get no answer
   and subscribes to `PlayerMessage` (in-game chat) and `AgentCommand` (the results of
   `agent` commands).
 - **`src/web/server.js`** serves `public/` and relays status, commands, responses and chat to every

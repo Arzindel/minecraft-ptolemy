@@ -4,9 +4,9 @@ const { EventEmitter } = require('events');
 const crypto = require('crypto');
 const WebSocket = require('ws');
 
-// Bedrock silently drops command requests once roughly 100 are in flight,
-// so we keep our own queue and only let a safe number out at a time.
-const DEFAULT_MAX_IN_FLIGHT = 50;
+// Bedrock silently drops every command request beyond 100 in flight (measured: at N in
+// flight, exactly N - 100 never get a response), so we queue the rest ourselves.
+const MAX_IN_FLIGHT_LIMIT = 100;
 const COMMAND_TIMEOUT_MS = 10000;
 
 /**
@@ -40,7 +40,7 @@ class MinecraftBridge extends EventEmitter {
     // body.version of command requests: the command syntax version. Other tools send a
     // Minecraft version string (e.g. "1.21.0"); null leaves the field out entirely.
     this.commandVersion = 1;
-    this.maxInFlight = DEFAULT_MAX_IN_FLIGHT;
+    this.maxInFlight = MAX_IN_FLIGHT_LIMIT;
   }
 
   listen() {
@@ -310,4 +310,4 @@ function parseAgentCommand(body) {
   return { commandName, result, body };
 }
 
-module.exports = { MinecraftBridge };
+module.exports = { MinecraftBridge, MAX_IN_FLIGHT_LIMIT };

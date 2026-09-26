@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 const { scanAroundAgent, formatScan } = require('../agent/scan');
+const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const SRC_DIR = path.join(__dirname, '..');
@@ -199,9 +200,16 @@ class WebServer {
       }
       case 'inflight': {
         const n = Number(args[0]);
-        if (args[0] && Number.isInteger(n) && n >= 1) this.bridge.maxInFlight = n;
+        if (args[0] && Number.isInteger(n) && n >= 1) {
+          if (n > MAX_IN_FLIGHT_LIMIT) {
+            say(`Bedrock drops every command beyond ${MAX_IN_FLIGHT_LIMIT} in flight, so the limit stays at ${MAX_IN_FLIGHT_LIMIT}.`);
+            this.bridge.maxInFlight = MAX_IN_FLIGHT_LIMIT;
+          } else {
+            this.bridge.maxInFlight = n;
+          }
+        }
         say(`Up to ${this.bridge.maxInFlight} commands are sent to Minecraft at once`
-          + (args[0] ? '' : '. Usage: #inflight <n>'));
+          + (args[0] ? '' : `. Usage: #inflight <1-${MAX_IN_FLIGHT_LIMIT}>`));
         return;
       }
       case 'probe':
