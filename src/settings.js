@@ -30,6 +30,13 @@ const SCHEMA = [
     ].map((f) => ({ ...f, min: 1, max: 1000, step: 1 })),
   },
   {
+    group: 'Scanning',
+    fields: [
+      { key: 'scan.radius', label: 'Default #scan radius', default: 4, min: 1, max: 15, step: 1,
+        help: 'Used by #scan without a radius and preselected in the Nanny Cam (4 = 9x9x9, 15 = 31x31x31).' },
+    ],
+  },
+  {
     group: 'Path planning',
     fields: [
       { key: 'path.turnCost', label: 'Cost of a turn', default: 1, min: 0, max: 100, step: 0.5 },
@@ -38,8 +45,9 @@ const SCHEMA = [
       { key: 'path.scanRadius', label: 'Rescan radius for #pathfindwalk', default: 7, min: 1, max: 15, step: 1,
         help: 'How far around the robot to scan when walking into unknown territory (7 = 15x15x15).' },
       { key: 'path.retries', label: 'Retries for #pathfindwalk', default: 3, min: 0, max: 50, step: 1 },
-      { key: 'path.safe', label: 'Safe mode (#pathsafe)', type: 'boolean', default: false,
-        help: 'Wait up to 2s for the agent to arrive after each step, instead of checking once.' },
+      { key: 'path.safe', label: 'Safe mode (#pathsafe)', type: 'boolean', default: true,
+        help: 'If the agent isn\'t where it should be after a step, keep checking for up to 2s before '
+          + 'calling it a failure. Costs nothing when steps succeed straight away.' },
     ],
   },
   {

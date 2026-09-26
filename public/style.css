@@ -398,3 +398,13 @@ code, pre, input { font-family: var(--mono); }
 .config-row input[type="number"]:focus { outline: none; border-color: var(--accent); }
 .config-row input.changed { border-color: var(--warn); }
 .config-row input[type="checkbox"] { justify-self: start; width: 16px; height: 16px; accent-color: var(--accent); }
+
+.cam-control input[type="number"] {
+  width: 4.5em;
+  font: 12px var(--mono);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
