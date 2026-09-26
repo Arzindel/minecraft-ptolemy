@@ -287,3 +287,5 @@ code, pre, input { font-family: var(--mono); }
   flex: 1;
   overflow: auto;
 }
+
+.log .agent .text { color: var(--warn); }

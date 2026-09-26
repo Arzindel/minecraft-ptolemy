@@ -73,7 +73,14 @@ Then:
    agent tp 0 64 0
    ```
 
-The leading `/` is optional. Click a response line to see the raw JSON the game sent back in the
+The leading `/` is optional.
+
+**Agent results arrive separately.** An `agent` command's response only confirms that the command ran
+(`"Agent inspect successful"`). The actual outcome, like the block `inspect` saw or whether `detect`
+found something, arrives shortly after as an `AgentCommand` game event. Ptolemy subscribes to it
+automatically and shows it as a 🤖 line in the console.
+
+Click a response line to see the raw JSON the game sent back in the
 Information panel.
 
 ### Configuration
@@ -97,7 +104,8 @@ Information panel.
   in Bedrock's `commandRequest` envelope, matches each `commandResponse` to its request by
   `requestId`, and returns a promise per command. It caps how many commands are in flight, because
   Bedrock silently drops requests beyond about 100. It also times out commands that get no answer
-  and subscribes to `PlayerMessage` so in-game chat reaches the UI.
+  and subscribes to `PlayerMessage` (in-game chat) and `AgentCommand` (the results of
+  `agent` commands).
 - **`src/web/server.js`** serves `public/` and relays status, commands, responses and chat to every
   open browser tab. It keeps a short log history, so a refreshed tab picks up where it left off.
 - **`public/`** is the WebUI in plain HTML, CSS and JS, with no build step.
