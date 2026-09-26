@@ -731,3 +731,7 @@ code, pre, input { font-family: var(--mono); }
 
 .other-worlds summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .card textarea { font-family: var(--sans); resize: vertical; }
+
+/* Streaming: a blinking caret after text that is still arriving. */
+.pilot-log .streaming .pilot-text::after { content: '▍'; color: var(--accent); animation: pulse 0.7s ease-in-out infinite alternate; margin-left: 2px; }
+.pilot-log .pilot-thinking details[open] pre { max-height: 200px; color: var(--muted); }

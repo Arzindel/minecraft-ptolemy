@@ -1,6 +1,8 @@
 'use strict';
 
 const { systemPrompt } = require('../llm/prompts');
+const { Frame } = require('../agent/frame');
+const { getAgentPose } = require('../agent/pose');
 
 // A small Model Context Protocol server over "Streamable HTTP" (JSON responses only, no SSE),
 // serving the same tools as Automatic mode, so MCP clients (Claude Desktop through `npm run mcp`,
@@ -127,14 +129,19 @@ class McpServer {
         };
       case 'prompts/get': {
         if (params.name !== 'pilot') throw Object.assign(new Error(`Unknown prompt "${params.name}"`), { code: -32602 });
-        const text = systemPrompt({
+        const coordinates = this.settings.get('llm.coordinates');
+        let frame = null;
+        try {
+          if (this.bridge.connected) frame = new Frame(await getAgentPose(this.bridge), coordinates);
+        } catch { /* no agent: memory shown in world coordinates */ }
+        const memory = this.worlds && this.worlds.current ? this.worlds.current.promptBlock(frame) : '';
+        const text = `${systemPrompt({
           player: this.bridge.player,
           instructions: this.settings.get('llm.instructions'),
           tools: this.toolbox.list(),
           textMode: false,
-          memory: this.worlds && this.worlds.current ? this.worlds.current.promptBlock() : null,
-          source: 'mcp',
-        });
+          coordinates,
+        })}\n\nOver MCP there is no [Now] block: call get_status to see where things are.${memory ? `\n\n${memory}` : ''}`;
         const task = params.arguments && params.arguments.task;
         return {
           description: 'Pilot the Ptolemy robot',

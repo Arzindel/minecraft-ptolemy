@@ -3,11 +3,15 @@
 const { EventEmitter } = require('events');
 const { chat, LlmError } = require('./client');
 const { resolveModel } = require('./tests');
-const { systemPrompt, parseTextToolCalls, parseArguments, visibleText, thinkingOf } = require('./prompts');
+const { systemPrompt, contextBlock, parseTextToolCalls, parseArguments, visibleText, thinkingOf } = require('./prompts');
 const { getAgentPose } = require('../agent/pose');
+const { Frame } = require('../agent/frame');
 
 const TRANSCRIPT_LIMIT = 300;
 const QUEUE_LIMIT = 5;
+const STREAM_FLUSH_MS = 120; // how often streamed text is pushed to the WebUI
+// Tools whose result is a snapshot: once a newer one exists, the older ones are left out of the prompt.
+const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'get_memory', 'todo_write']);
 
 /**
  * Automatic mode: takes requests (from the WebUI, the in-game chat, or the wondering timer) and
@@ -149,8 +153,7 @@ class Pilot extends EventEmitter {
     try {
       const config = this.endpoints.config();
       await resolveModel(config, { signal });
-      const status = await this._statusLine();
-      const turn = [{ role: 'user', text: status ? `${request.text}\n\n[${status}]` : request.text }];
+      const turn = [{ role: 'user', text: request.text }];
       this.turns.push(turn);
 
       const maxSteps = this.settings.get(wondering ? 'wonder.maxSteps' : 'llm.maxSteps');
@@ -160,17 +163,23 @@ class Pilot extends EventEmitter {
         const tools = this.toolbox.list();
         this._setPhase('thinking', `${config.label}${config.model ? ` · ${config.model}` : ''}`);
 
+        // Fresh state for this call only: it rides on the newest message and is dropped from older ones.
+        turn[turn.length - 1].context = await this._context(request.source);
+        const live = this._liveEntries(request.source);
+
         let reply;
         try {
           reply = await chat(config, {
-            messages: this._render(config, tools, textMode, request.source),
+            messages: this._render(config, tools, textMode),
             tools: textMode ? null : tools,
             temperature: this.settings.get('llm.temperature'),
             maxTokens: this.settings.get('llm.maxTokens'),
             timeoutMs: this.settings.get('llm.timeout') * 1000,
             signal,
+            onDelta: this.settings.get('llm.stream') ? live.onDelta : undefined,
           });
         } catch (err) {
+          live.discard();
           if (err instanceof LlmError && err.rejectsTools && !textMode && config.toolMode === 'auto') {
             this.fallbackToText.add(this._configKey(config));
             this._entry({ kind: 'info', text: `${config.label} refused native tool calls, so tools are now described in the prompt instead (text mode). ${err.message}` });
@@ -190,11 +199,8 @@ class Pilot extends EventEmitter {
         }
         const thinking = reply.reasoning || thinkingOf(reply.content);
         const text = visibleText(reply.content);
-        if (thinking) this._entry({ kind: 'thinking', text: thinking });
-        if (text) {
-          this._entry({ kind: 'assistant', text, final: !calls.length, source: request.source });
-          say(text);
-        }
+        live.finish(thinking, text, !calls.length);
+        if (text) say(text);
         turn.push({ role: 'assistant', text, calls, raw: reply.raw, api: config.api });
 
         if (!calls.length) {
@@ -266,48 +272,121 @@ class Pilot extends EventEmitter {
     return `${config.id}|${config.baseUrl}|${config.model}`;
   }
 
-  /** "Robot at ..., player at ..." so the model rarely needs a get_status call to start. */
-  async _statusLine() {
-    if (!this.bridge.connected) return 'Minecraft is not connected right now.';
+  /** The [Now] block: where the request came from, where things are (in the model's frame), and the memory. */
+  async _context(source) {
     const memory = this.worlds.current;
     const inArea = (x, y, z) => {
       const where = memory && memory.describeAreasAt(x, y, z);
       return where ? ` (in ${where})` : '';
     };
+    let frame = null;
     const parts = [];
-    try {
-      const pose = await getAgentPose(this.bridge);
-      parts.push(`robot at ${pose.x} ${pose.y} ${pose.z} facing ${['south', 'west', 'north', 'east'][pose.facing]}${inArea(pose.x, pose.y, pose.z)}`);
-    } catch {
-      parts.push('robot position unknown (there may be no agent in this world yet; run_command "agent create" makes one)');
+    if (!this.bridge.connected) {
+      parts.push('Minecraft is not connected right now.');
+    } else {
+      try {
+        const pose = await getAgentPose(this.bridge);
+        frame = new Frame(pose, this.settings.get('llm.coordinates'));
+        parts.push(`Robot: ${frame.here()}${inArea(pose.x, pose.y, pose.z)}.`);
+      } catch {
+        parts.push('Robot: position unknown (there may be no agent in this world yet; run_command "agent create" makes one).');
+      }
+      try {
+        const res = await this.bridge.sendCommand('querytarget @s', { quiet: true });
+        const p = JSON.parse(res.body.details)[0].position;
+        const [x, y, z] = [p.x, p.y, p.z].map(Math.floor);
+        parts.push(`Player: ${frame ? frame.fmt(x, y, z) : `${x} ${y} ${z}`}${inArea(x, y, z) || inArea(x, y - 1, z)}.`);
+      } catch { /* not important */ }
     }
-    try {
-      const res = await this.bridge.sendCommand('querytarget @s', { quiet: true });
-      const p = JSON.parse(res.body.details)[0].position;
-      const [x, y, z] = [p.x, p.y, p.z].map(Math.floor);
-      parts.push(`player at ${x} ${y} ${z}${inArea(x, y, z) || inArea(x, y - 1, z)}`);
-    } catch { /* not important */ }
-    return `Status: ${parts.join(', ')}`;
+    return contextBlock({ source, status: parts.join('\n'), memory: memory && memory.promptBlock(frame) });
+  }
+
+  /**
+   * Transcript entries for one model call. With streaming, the thinking and the answer appear
+   * and grow as they arrive (pushed to the WebUI every STREAM_FLUSH_MS); otherwise they're added
+   * when the call returns.
+   */
+  _liveEntries(source) {
+    let rawText = '';
+    let rawThinking = '';
+    let thinkingEntry = null;
+    let textEntry = null;
+    let timer = null;
+    const flush = () => {
+      timer = null;
+      const thinking = rawThinking || thinkingOf(rawText);
+      const text = visibleText(rawText);
+      if (thinking) {
+        if (!thinkingEntry) thinkingEntry = this._entry({ kind: 'thinking', text: thinking, streaming: true });
+        else this._update(thinkingEntry, { text: thinking });
+      }
+      if (text) {
+        if (!textEntry) textEntry = this._entry({ kind: 'assistant', text, source, streaming: true });
+        else this._update(textEntry, { text });
+      }
+    };
+    const drop = (entry) => {
+      if (!entry) return;
+      this.transcript = this.transcript.filter((e) => e !== entry);
+      this._update(entry, { removed: true });
+    };
+    return {
+      onDelta: (kind, piece) => {
+        if (kind === 'thinking') rawThinking += piece;
+        else rawText += piece;
+        if (!timer) timer = setTimeout(flush, STREAM_FLUSH_MS);
+      },
+      finish: (thinking, text, final) => {
+        clearTimeout(timer);
+        if (thinking) {
+          if (thinkingEntry) this._update(thinkingEntry, { text: thinking, streaming: false });
+          else this._entry({ kind: 'thinking', text: thinking });
+        } else drop(thinkingEntry);
+        if (text) {
+          if (textEntry) this._update(textEntry, { text, final, streaming: false });
+          else this._entry({ kind: 'assistant', text, final, source });
+        } else drop(textEntry);
+      },
+      discard: () => {
+        clearTimeout(timer);
+        if (thinkingEntry) this._update(thinkingEntry, { streaming: false });
+        drop(textEntry);
+      },
+    };
   }
 
   /** The conversation as API messages, trimmed to the configured budget. */
-  _render(config, tools, textMode, source) {
+  _render(config, tools, textMode) {
     const system = systemPrompt({
       player: this.bridge.player,
       instructions: this.settings.get('llm.instructions'),
       tools,
       textMode,
-      memory: this.worlds.current && this.worlds.current.promptBlock(),
-      source,
+      coordinates: this.settings.get('llm.coordinates'),
     });
     const budget = this.settings.get('llm.historyChars');
     const turns = this._trimmed(budget - system.length);
     const messages = [{ role: 'system', content: system }];
+    const anthropic = config.api === 'anthropic';
+
+    // Snapshots (scans, status, memory, the todo list) go stale: only the newest of each kind is sent.
+    const newest = new Map();
+    for (const turn of turns) {
+      for (const m of turn) if (m.role === 'results') for (const r of m.results) if (SNAPSHOT_TOOLS.has(r.name)) newest.set(r.name, r);
+    }
+    const lastMessage = turns.length ? turns[turns.length - 1][turns[turns.length - 1].length - 1] : null;
+
     turns.forEach((turn, ti) => {
       const latest = ti === turns.length - 1;
+      // Anthropic checks that the history before its thinking blocks is unchanged within a tool loop,
+      // so the request in progress is sent exactly as it was (old [Now] blocks and snapshots included).
+      const frozen = anthropic && latest;
+      const withContext = (m, content) => (m.context && (m === lastMessage || frozen) ? `${content}\n\n${m.context}` : content);
+      const resultText = (r) => (SNAPSHOT_TOOLS.has(r.name) && newest.get(r.name) !== r && !frozen
+        ? `(Older ${r.name} result left out: a newer one follows.)` : r.text);
       for (const m of turn) {
         if (m.role === 'user') {
-          messages.push({ role: 'user', content: m.text });
+          messages.push({ role: 'user', content: withContext(m, m.text) });
         } else if (m.role === 'assistant') {
           if (textMode || !m.calls.length) {
             const blocks = m.calls.map((c) => `<tool_call>\n${JSON.stringify({ name: c.name, arguments: c.args })}\n</tool_call>`);
@@ -325,9 +404,13 @@ class Pilot extends EventEmitter {
           }
         } else if (m.role === 'results') {
           if (textMode) {
-            messages.push({ role: 'user', content: `Tool results:\n${m.results.map((r) => `[${r.name}]\n${r.text}`).join('\n\n')}` });
+            messages.push({ role: 'user', content: withContext(m, `Tool results:\n${m.results.map((r) => `[${r.name}]\n${resultText(r)}`).join('\n\n')}`) });
           } else {
-            for (const r of m.results) messages.push({ role: 'tool', tool_call_id: r.id, content: r.text });
+            m.results.forEach((r, i) => messages.push({
+              role: 'tool',
+              tool_call_id: r.id,
+              content: i === m.results.length - 1 ? withContext(m, resultText(r)) : resultText(r),
+            }));
           }
         }
       }
@@ -368,7 +451,7 @@ class Pilot extends EventEmitter {
   _save(memory = this.worlds.current) {
     if (!memory) return;
     // Anthropic's raw blocks are only needed within a request; don't keep them on disk.
-    const turns = this.turns.map((t) => t.map(({ raw, ...m }) => m));
+    const turns = this.turns.map((t) => t.map(({ raw, context, ...m }) => m));
     memory.saveConversation({ turns, transcript: this.transcript.slice(-TRANSCRIPT_LIMIT) });
   }
 

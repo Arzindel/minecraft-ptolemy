@@ -19,6 +19,12 @@
   const PHASES = { idle: 'Idle', thinking: 'Thinking', tool: 'Running', stopping: 'Stopping' };
 
   function render(entry) {
+    if (entry.removed) {
+      if (items.has(entry.id)) items.get(entry.id).remove();
+      items.delete(entry.id);
+      return;
+    }
+    const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
     const li = items.get(entry.id) || document.createElement('li');
     li.className = `pilot-${entry.kind}`;
     li.textContent = '';
@@ -44,13 +50,17 @@
       li.classList.toggle('failed', entry.ok === false);
       li.append(details);
     } else if (entry.kind === 'thinking') {
+      // Open while it streams in; afterwards it stays however the user left it.
       const details = document.createElement('details');
       const summary = document.createElement('summary');
-      summary.textContent = 'Thinking';
+      summary.textContent = entry.streaming ? `Thinking… (${entry.text.length.toLocaleString()} characters)` : 'Thinking';
       const pre = document.createElement('pre');
       pre.textContent = entry.text;
       details.append(summary, pre);
+      details.open = Boolean(entry.streaming) || li.dataset.open === '1';
+      details.addEventListener('toggle', () => { if (!entry.streaming) li.dataset.open = details.open ? '1' : ''; });
       li.append(details);
+      if (entry.streaming) requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
     } else {
       const who = document.createElement('span');
       who.className = 'pilot-who';
@@ -64,15 +74,15 @@
       // The wondering prompt is long and always the same: show a short stand-in.
       text.textContent = entry.kind === 'user' && entry.source === 'wonder' ? '(idle for a while: act natural)' : entry.text;
       if (entry.kind === 'user' && entry.source === 'wonder') li.classList.add('pilot-wonder');
+      if (entry.streaming) li.classList.add('streaming');
       li.append(who, text);
     }
 
     if (!items.has(entry.id)) {
-      const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
       items.set(entry.id, li);
       log.append(li);
-      if (stick) log.scrollTop = log.scrollHeight;
     }
+    if (stick) log.scrollTop = log.scrollHeight;
   }
 
   function formatArgs(args) {
