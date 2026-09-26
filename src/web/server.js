@@ -11,6 +11,7 @@ const { Navigator, pathMessage } = require('../agent/navigator');
 const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
+const { Brain } = require('./brain');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const SRC_DIR = path.join(__dirname, '..');
@@ -65,7 +66,22 @@ class WebServer {
     });
     this.nextLogId = 1;
 
-    this.http = http.createServer((req, res) => this._serveStatic(req, res));
+    // Worlds and their memory, LLM endpoints, Automatic mode, wondering, chat requests, MCP.
+    this.brain = new Brain({
+      bridge,
+      settings: this.settings,
+      navigator: this.navigator,
+      world: this.world,
+      scan: (radius, opts) => this._scan(radius, opts),
+      sight: () => this.sight,
+      log: (text) => this._addLog('system', text),
+      broadcast: (message) => this._broadcast(message),
+    });
+
+    this.http = http.createServer((req, res) => {
+      if (new URL(req.url, 'http://localhost').pathname === '/mcp') this.brain.mcp.handleHttp(req, res);
+      else this._serveStatic(req, res);
+    });
     this.wss = new WebSocket.Server({ noServer: true });
 
     this.http.on('upgrade', (req, socket, head) => {
@@ -91,7 +107,10 @@ class WebServer {
       });
       this._broadcastStatus();
     });
-    bridge.on('chat', ({ sender, message }) => this._addLog('chat', message, { sender }));
+    bridge.on('chat', ({ sender, message, type }) => {
+      this._addLog('chat', message, { sender });
+      this.brain.chat(sender, message, type);
+    });
     // Moving the agent by hand invalidates stored paths (the walker's own commands are quiet).
     bridge.on('response', (res) => {
       if (!res.ok || !/^agent (move|turn|tp|teleport)\b/i.test(res.commandLine)) return;
@@ -117,6 +136,7 @@ class WebServer {
   }
 
   close() {
+    this.brain.close();
     this.wss.clients.forEach((ws) => ws.close());
     this.http.close();
   }
@@ -139,6 +159,7 @@ class WebServer {
     ws.send(JSON.stringify(this.settings.message()));
     ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
     ws.send(JSON.stringify(pathMessage('fly', this.navigator.paths.fly)));
+    for (const message of this.brain.initialMessages()) ws.send(JSON.stringify(message));
 
     // The WebUI is re-read from disk on every page load, but the server code only on
     // start-up, so after a `git pull` the page can be newer than the server behind it.
@@ -166,6 +187,7 @@ class WebServer {
           } else {
             this.bridge.sendCommand(msg.text);
           }
+          this.brain.manualActivity();
           break;
         case 'scan': {
           const radius = Number(msg.radius);
@@ -183,11 +205,11 @@ class WebServer {
         case 'disconnect':
           this.bridge.disconnect();
           break;
-        case 'clearLog':
-          this.log = [];
-          this._broadcast({ type: 'history', entries: [] });
+        case 'settingsWorldToDefaults':
+          this.settings.worldToDefaults();
           break;
         default:
+          this.brain.handle(ws, msg);
           break;
       }
     });
@@ -199,6 +221,7 @@ class WebServer {
   _runConsoleCommand(text) {
     const [name = '', ...args] = text.split(/\s+/);
     const say = (line) => this._addLog('system', line);
+    if (this.brain.console(name.toLowerCase(), args, text)) return;
 
     switch (name.toLowerCase()) {
       case 'subscribe':
@@ -319,7 +342,10 @@ class WebServer {
           + 'rescanning on the way), #flypathfind / #flypathwalk / #flypathfindwalk (the same, flying straight), '
           + '#pathsafe on|off, #pathstop, '
           + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
-          + '#raw <json> (send a hand-written WebSocket message), #help. '
+          + '#raw <json> (send a hand-written WebSocket message), '
+          + '#ask <request> (give the LLM a request), #wonder off|on|always, '
+          + '#world [new name], #area list | add <name> x1 y1 z1 x2 y2 z2 | remove <name>, '
+          + '#boundary <name> x1 x2 y1 y2 z1 z2, #help. '
           + 'Anything not starting with # is sent to Minecraft.');
         return;
       default:

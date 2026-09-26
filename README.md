@@ -7,7 +7,7 @@ indestructible robot that does exactly one thing per command and never checks wh
 Bedrock can also open a WebSocket to an external program with `/connect`, which lets that program run
 commands in the world without any mods.
 
-Ptolemy connects the two. The end goal is an MCP-style loop where an LLM drives the agent. It is slow,
+Ptolemy connects the two. An LLM drives the agent in an MCP-style loop. It is slow,
 it wastes tokens, and it is awesome.
 
 ## The idea: make the agent a closed-loop system
@@ -34,9 +34,15 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Manual mode: raw command console | ✅ Working |
 | Information panel (connection info, response inspector) | ✅ Basic |
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
-| Bounded-region mapping (the Roomba part) | 🔜 Planned |
-| Automatic mode: LLM control (NVIDIA Build, text-generation-webui, LM Studio) | 🔜 Planned |
-| Instructions from in-game chat | 🔜 Planned (chat is already captured) |
+| Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
+| Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
+| Automatic mode: LLM control (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic, any OpenAI-compatible server) | ✅ New, needs real-world testing |
+| Endpoint tests (connection, model, tool calling) | ✅ New |
+| Instructions from in-game chat (`Ptolemy, come here`) | ✅ New |
+| Wondering (the robot acts on its own when idle) | ✅ New |
+| World Memory per world: named areas, todo list, thoughts, notes, per-world settings | ✅ New |
+| Dashboard | ✅ New |
+| MCP server (the same tools for Claude Desktop, LM Studio, Cursor...) | ✅ New |
 
 ## Requirements
 
@@ -105,6 +111,11 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
 | `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
 | `#subscriptions` | List the current subscriptions, which are re-sent whenever Minecraft reconnects |
+| `#ask <request>` | Give the LLM a request, as if typed in the Automatic tab |
+| `#wonder off\|on\|always` | Switch wondering (see [Wondering](#wondering)) |
+| `#world` / `#world <name>` | Show which world Ptolemy thinks it's in, or rename it |
+| `#area list` / `#area add <name> x1 y1 z1 x2 y2 z2` / `#area remove <name>` | Named areas of this world (two opposite corners) |
+| `#boundary <name> x1 x2 y1 y2 z1 z2` | The same as `#area add`, with the coordinates as ranges |
 | `#help` | Show this list |
 
 Subscribing isn't a Minecraft command (there's no `/subscribe`). It's a different kind of WebSocket
@@ -121,6 +132,12 @@ Information panel.
 | --- | --- | --- |
 | `PTOLEMY_UI_PORT` | `3000` | Port for the WebUI (HTTP and its own WebSocket at `/ui`) |
 | `PTOLEMY_MC_PORT` | `8080` | Port Minecraft connects to with `/connect` |
+| `NVIDIA_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | | Used by those endpoints when no key is saved for them |
+| `PTOLEMY_KEY_<ENDPOINT>` | | Where each endpoint's saved key lives, in `.env` (e.g. `PTOLEMY_KEY_NVIDIA`) |
+| `PTOLEMY_MCP_URL` | `http://localhost:$PTOLEMY_UI_PORT/mcp` | Where `npm run mcp` relays to |
+
+Ptolemy reads a `.env` file in the project folder at start-up (it's git-ignored). API keys typed into
+Configuration → LLM are saved there.
 
 ## Scanning
 
@@ -190,13 +207,204 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
 - **Nanny Cam:** walking paths show as cyan beads and flight paths as magenta ones. They fade as the
   robot walks them, and a finished walk leaves a faded trail. The robot's marker follows it while it walks.
 
+## Automatic mode (LLM)
+
+The **Automatic** tab is a chat with the robot. Type a request ("come to me", "dig a 3x3 hole in front
+of you", "what's around you?") and the LLM works it out with the robot's tools, one call at a time:
+it calls a tool, reads what actually happened, and decides what to do next, until it answers without
+calling a tool. Every tool call shows up in the transcript (click one to see the full result) and in
+the Manual console as `LLM → tool {...}`. **Stop** stops the model and the robot; **New conversation**
+makes it forget everything said so far.
+
+Each request starts with the robot's and player's positions attached (and the named areas they're in),
+and the system prompt carries the world's memory, so the model rarely has to ask.
+
+**Where replies go.** What the model says while it works (its "default replies") goes back to wherever
+the request came from: a request typed in the WebUI is answered in the WebUI, and a request from the
+game chat is answered in the game chat (as `<Ptolemy> ...`). The WebUI always shows everything. To
+reach the other side on purpose, the model has `send_chat` and `send_webui`. For example, you can ask
+it in the WebUI to "tell everyone dinner is ready".
+
+The conversation is saved per world (`data/worlds/<id>/conversation.json`), so it survives restarts.
+
+### Endpoints
+
+**Configuration → LLM** has a card for each endpoint: LM Studio, text-generation-webui (oobabooga),
+NVIDIA Build, OpenAI and Anthropic to begin with. You can add more with **Add endpoint**, for example
+for Ollama, llama.cpp, vLLM, or a second LM Studio on another PC. The one marked **In use** drives
+Automatic mode.
+
+| Endpoint | Setup | Defaults |
+| --- | --- | --- |
+| **LM Studio** | Load a model and start the server (Developer tab, or `lms server start`). Models with the 🔨 tool-use badge work best | `http://localhost:1234/v1`, model empty = the first one listed, tools: Auto |
+| **text-generation-webui** | Start it with `--api` and load a model in its UI | `http://localhost:5000/v1`, model empty = whatever is loaded, tools: Text |
+| **NVIDIA Build** | An `nvapi-...` key from [build.nvidia.com](https://build.nvidia.com) | `https://integrate.api.nvidia.com/v1`, `meta/llama-3.3-70b-instruct`, tools: Auto |
+| **OpenAI** | A key from platform.openai.com; press ↻ and pick a model | `https://api.openai.com/v1`, tools: Native |
+| **Anthropic** | A key from platform.claude.com. Uses Anthropic's own Messages API | `https://api.anthropic.com/v1`, `claude-opus-5`, tools: Native |
+
+Each card has:
+
+- **API key**, shown as dots and optional, since local servers usually don't need one. It's saved in
+  the git-ignored `.env` file, never in `data/`, and never sent back to the browser. **Clear** removes it.
+- **Model**, with a **↻** button that fetches the server's list into the dropdown. It's optional:
+  empty means the first model the server lists (or, for text-generation-webui, whatever is loaded).
+  **Other…** takes any name.
+- **Tool calling**:
+  - **Native** sends the tools in the API's `tools` parameter.
+  - **Text** describes them in the prompt and reads `<tool_call>{...}</tool_call>` blocks from the reply,
+    which works with any model.
+  - **Auto** tries native and switches to text if the server rejects `tools`.
+- **Three tests**, each with a dot that stays grey until tested, then green or red for the rest of the
+  session. A dot goes back to grey when the endpoint's URL, key or model changes. Hover a dot for details.
+  - **Test endpoint**: can Ptolemy reach the server, and is the key accepted?
+  - **Test model**: sends a short message asking for a tiny JSON reply, and checks it.
+  - **Test tools**: asks the model to call a tool. Green means native tool calls work. Red says why:
+    the model wrote the call as plain text (use Text mode), ignored the tool, or the server refused it.
+
+The other LLM settings:
+- Temperature. It's dropped automatically for models that refuse it.
+- Max tokens per reply. Keep it generous for reasoning models, whose `<think>` output shows collapsed
+  as *Thinking*. Anthropic models always get at least 16,000.
+- Max model calls per request, a guard against runaways.
+- The timeout.
+- The conversation budget. Older requests are dropped, and their tool results shortened, to stay
+  under it. It's about 4 characters per token.
+- The maximum length of one tool result.
+- **Extra instructions** for every world. The prompt itself is in `src/llm/prompts.js`.
+
+### Wondering
+
+The **Wondering** switch above the conversation makes the robot act on its own when it's idle. After
+`wonder.interval` seconds (15 by default) without anything happening, the LLM gets the wondering prompt:
+act natural. Depending on its mood, it might follow up a thought or a todo, wander around a named area,
+have a new thought, or do nothing at all. "Anything happening" means a model reply, a tool call, a
+console command, or flipping the switch. The countdown starts from the last of those, so it isn't a
+rolling timer.
+
+| Mode | Behaviour |
+| --- | --- |
+| **Off** | Never |
+| **On** | Wonders until someone asks for something (WebUI or chat), then switches itself off |
+| **Always on** | Pauses while a request runs, then counts down again |
+
+A request always interrupts a wander in progress. Wondering waits while Minecraft is disconnected or
+the world has no agent. The interval, the step limit per wander (6) and the prompt itself are under
+**Configuration → Automatic**.
+
+### The tools
+
+The LLM and MCP clients use the same tools (`src/tools/index.js`). Most bundle several commands and
+report what really happened, because the game says "success" even when the robot bumped into a wall.
+
+| Tool | What it does |
+| --- | --- |
+| `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
+| `scan` | Scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around |
+| `get_blocks` | The block at up to 64 exact coordinates |
+| `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it |
+| `turn` | Turn left, right or around, or face north/south/east/west |
+| `go_to` | `#pathfindwalk` to coordinates, to the player or to a named area, optionally flying |
+| `teleport_to_player` | `agent tp` |
+| `destroy`, `place`, `attack` | The agent commands. For `destroy` and `place`, the target cell is checked before and after. `place` takes an inventory slot |
+| `collect`, `drop` | Pick up items nearby, or drop items from a slot |
+| `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked |
+| `send_webui` | A highlighted message in the Automatic tab, whoever asked |
+| `get_memory` | This world's memory (the LLM also gets it in its prompt) |
+| `add_area`, `remove_area` | Name a box ("house", "kitchen"), or forget one |
+| `todo_write` | Replace the todo list, with each item pending / in progress / done |
+| `add_thought`, `drop_thought` | What's on the robot's mind |
+| `remember`, `forget` | Notes: facts worth keeping |
+| `wait` | Wait up to 60 seconds |
+| `run_command` | Any Minecraft command, with the game's raw reply: the escape hatch for everything else |
+
+`run_command` and `destroy`/`attack` can be turned off under **Tools and MCP**.
+
+### From the in-game chat
+
+A chat message that mentions **Ptolemy** (anywhere, any case) is a request: `Ptolemy, come here`,
+`can ptolemy build a tower?`. A message that contains **Ptoless** is never a request, even if it also
+says Ptolemy, so you can talk about the robot without calling it. `Ptolemy, stop` stops it. Requests
+that arrive while it's busy wait their turn. The robot's own chat lines never trigger it. Both words,
+and whether it listens and answers at all, are under **Configuration → Automatic**.
+
+## World Memory
+
+Ptolemy keeps a separate memory for every Minecraft world, in `data/worlds/<id>/`.
+
+**Which world is this?** Bedrock doesn't tell connected programs which world is open, so the first time
+Ptolemy sees a world it marks it with a dummy scoreboard objective called `ptolemy_<id>`. The marker is
+saved with the world, and Ptolemy reads it back every time the game connects. A new world starts with
+empty memory and a copy of the per-world settings.
+- **The Dashboard names worlds.** A new world gets a placeholder name; rename it there or with
+  `#world <name>`.
+- **"This is it"** fixes a mix-up. If a world was detected wrongly, for example a copy of a world
+  or a world that lost its scoreboard, the Dashboard's other-worlds list can switch to the right
+  memory. It also re-marks the game world to match.
+- **Without cheats, worlds can't be marked.** Ptolemy then uses a shared "Unmarked world" memory,
+  and says so.
+- **A world without an agent** gets a **Create the agent** button on the Dashboard.
+
+What it remembers:
+
+| Memory | What it's for | Who writes it |
+| --- | --- | --- |
+| **Areas** | Named boxes: "house", "kitchen", "farm". An area inside another is part of it ("kitchen in house"). The robot's and player's areas are shown everywhere, `go_to` can target an area, and the Nanny Cam outlines them | The LLM (`add_area`), the Dashboard, `#area` / `#boundary` |
+| **Todo list** | The robot's plan for multi-step work, like a coding agent's todo list: pending, in progress, done | The LLM (`todo_write`), the Dashboard |
+| **On its mind** | A few passing thoughts ("I want to see flowers") it may act on later, especially while wondering. Only the latest 10 are kept | The LLM (`add_thought`), the Dashboard |
+| **Notes** | Facts worth keeping ("the wood chest is at 10 64 5") | The LLM (`remember`), the Dashboard |
+| **Recent activity** | What it was asked lately and how it went | Automatic |
+| **Instructions for this world** | Added to the prompt in this world only | The Dashboard |
+
+The LLM sees all of it in its system prompt, and MCP clients can read it with `get_memory`.
+
+## Dashboard
+
+The **Dashboard** tab shows it all at once:
+- **The world**: its name (click to rename), how it was recognised, other known worlds, and the agent.
+- **Right now**: where the robot and the player are and in which areas, what the robot is doing, the
+  wondering countdown, and the active LLM endpoint with its test dots.
+- **The robot's memory**: the todo list (click a mark to go pending → in progress → done), what's on
+  its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent activity,
+  and this world's instructions.
+
+## MCP server
+
+Ptolemy is also an [MCP](https://modelcontextprotocol.io) server, so other AI apps can drive the robot
+with the same tools. It offers the tools above plus a `pilot` prompt (the system prompt, with an
+optional task).
+
+- **Over HTTP** (Streamable HTTP, JSON responses) at `http://localhost:3000/mcp` while Ptolemy runs.
+  For LM Studio, add it to `mcp.json`:
+  ```json
+  { "mcpServers": { "ptolemy": { "url": "http://localhost:3000/mcp" } } }
+  ```
+- **Over stdio**, for apps that launch a command, like Claude Desktop. `src/mcp/stdio.js` relays to the
+  running Ptolemy, so start Ptolemy first (`npm run mcp` runs the relay by hand):
+  ```json
+  { "mcpServers": { "ptolemy": { "command": "node", "args": ["C:/path/to/minecraft-ptolemy/src/mcp/stdio.js"] } } }
+  ```
+
+Tool calls from MCP clients show up in the Manual console as `MCP → tool {...}`. The endpoint can be
+turned off under **Tools and MCP**.
+
 ## Configuration
 
-The **Configuration** tab holds the tunables: the walking path costs, turn cost, unseen-cell penalty,
-the rescan radius and retries for `#pathfindwalk`, safe mode and the in-flight limit. Changes apply
-immediately, show up in every open tab, and are saved to `data/settings.json` (git-ignored), so they
-survive restarts. `#pathsafe` and `#inflight` change the same settings. Values that differ from their
-defaults are outlined, and **Reset to defaults** puts everything back.
+The **Configuration** tab has four sub-tabs:
+
+- **LLM**: the endpoints, and how the model is used (temperature, token and step limits, the
+  conversation budget, extra instructions for every world).
+- **Automatic**: the chat wake word, ignore word and replies, and wondering (interval, step limit,
+  and the wondering prompt itself).
+- **Robot & paths**: walking path costs, scanning and path planning. These are marked **this world**:
+  each world keeps its own copy. A world seen for the first time starts from the defaults for new
+  worlds, and **Use these as defaults for new worlds** makes the current world's values the new defaults.
+- **System**: tool permissions, the MCP server, and the in-flight limit.
+
+Changes apply immediately, show up in every open tab, and survive restarts: global values are in
+`data/settings.json`, a world's own values in `data/worlds/<id>/settings.json`, endpoints in
+`data/endpoints.json` and API keys in `.env` (all git-ignored). `#pathsafe` and `#inflight` change the
+same settings. Values that differ from their defaults are outlined, and **Reset to defaults** puts
+everything back (endpoints and keys stay).
 
 ## Nanny Cam
 
@@ -209,6 +417,7 @@ and no libraries:
 - **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
   or underground. Cut faces are drawn, so you can see inside walls.
 - **Hover** over a block to see its name and coordinates.
+- Named areas from World Memory are outlined with dotted lines, one colour each.
 - The robot is the yellow block. Its darker nose points the way it's facing.
 
 Air isn't drawn, and neither are blocks completely enclosed by other blocks. Water, glass and ice
@@ -260,9 +469,26 @@ add extra fields.
 src/
   index.js               entry point (npm run start)
   minecraft/bridge.js    Minecraft WebSocket bridge
-  web/server.js          static file server + WebUI socket
+  env.js                 reads and writes the git-ignored .env file (API keys)
+  web/server.js          static file server, WebUI socket, console commands
+  web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
+  settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
+  agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator)
+  world/manager.js       which world is open (the scoreboard marker), per-world folders
+  world/memory.js        World Memory: areas, todos, thoughts, notes, journal, conversation
+  tools/index.js         the robot's tools, shared by the LLM and MCP
+  llm/endpoints.js       endpoint presets and store (data/endpoints.json, keys in .env)
+  llm/client.js          chat client for OpenAI-compatible servers and Anthropic (built-in fetch)
+  llm/tests.js           the Test endpoint / model / tools buttons
+  llm/prompts.js         system prompt, text-mode tool calls
+  llm/pilot.js           the Automatic mode loop and conversation
+  llm/wonder.js          wondering: the idle timer
+  mcp/server.js          MCP over HTTP at /mcp
+  mcp/stdio.js           MCP over stdio, relaying to /mcp (npm run mcp)
 public/
   index.html, style.css, app.js   the WebUI
+  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js   the tabs
+  blocks.js              block colours / solidity
 abandoned-minimap-project/        old prototype, kept for reference only
 ```
 
@@ -270,5 +496,16 @@ abandoned-minimap-project/        old prototype, kept for reference only
 
 - `/connect` gives Ptolemy the same command permissions as your player. Only run it on worlds you
   don't mind a robot (or an LLM) messing with.
-- The Minecraft port accepts any client on your network. Don't expose it to the internet.
+- The Minecraft port accepts any client on your network. Don't expose it to the internet. The same
+  goes for the WebUI port, which also carries the MCP endpoint: anyone who can reach it can drive the
+  robot and run commands (browsers on other sites are refused, other programs aren't).
+- API keys are saved in plain text in `.env` (git-ignored) and never sent back to the browser. Set
+  `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` in your environment instead if you'd rather
+  not store them.
+- To recognise worlds, Ptolemy adds a dummy scoreboard objective called `ptolemy_<id>` to each world.
+  It doesn't show anywhere unless you display it. `/scoreboard objectives remove ptolemy_<id>` removes it
+  (Ptolemy then treats the world as new).
+- With wondering on, the LLM acts on its own every so often: with a paid endpoint, that costs tokens
+  even while you're not looking.
+- The LLM can run any command through `run_command` unless you turn it off in the Configuration tab.
 - The agent cannot be killed or removed. You have been warned. You were warned before that, too.

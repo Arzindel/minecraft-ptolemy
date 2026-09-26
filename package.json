@@ -1,12 +1,13 @@
 {
   "name": "minecraft-ptolemy",
   "version": "0.1.0",
-  "description": "Drive the Minecraft Bedrock Edition agent from a WebUI (and eventually an LLM) over the game's built-in WebSocket.",
+  "description": "Drive the Minecraft Bedrock Edition agent from a WebUI, an LLM (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic) or MCP clients, over the game's built-in WebSocket.",
   "main": "src/index.js",
   "private": true,
   "scripts": {
     "start": "node --watch src/index.js --watched",
-    "start:once": "node src/index.js"
+    "start:once": "node src/index.js",
+    "mcp": "node src/mcp/stdio.js"
   },
   "engines": {
     "node": ">=18.11"
