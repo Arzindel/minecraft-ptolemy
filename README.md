@@ -262,7 +262,9 @@ refuses streaming is switched to normal replies automatically.
   - Tools take and return coordinates in this frame, and after a move or turn they remind the model
     that it's at `0 0 0` again.
   - Areas are still stored in world coordinates and shown in the current frame, so they stay put.
-  - Only `run_command` uses world coordinates. `get_status` gives the world position for that.
+  - World coordinates are still there alongside: `get_status` and the `[Now]` block show both, and
+    `go_to`, `get_blocks`, `destroy`, `place` and `attack` take world coordinates with `world: true`.
+    `run_command` only knows world coordinates.
 - **World:** real Minecraft coordinates and compass directions, as before.
 
 The setting applies to MCP clients too.
@@ -350,11 +352,11 @@ report what really happened, because the game says "success" even when the robot
 | `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
 | `scan` | Scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around |
 | `get_blocks` | The block at up to 64 exact coordinates |
-| `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it |
+| `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |
-| `go_to` | `#pathfindwalk` to coordinates, to the player or to a named area, optionally flying |
+| `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
 | `teleport_to_player` | `agent tp` |
-| `destroy`, `place`, `attack` | The agent commands. For `destroy` and `place`, the target cell is checked before and after. `place` takes an inventory slot |
+| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's x y z instead, they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
 | `collect`, `drop` | Pick up items nearby, or drop items from a slot |
 | `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked |
 | `send_webui` | A highlighted message in the Automatic tab, whoever asked |

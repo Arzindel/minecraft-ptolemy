@@ -54,7 +54,17 @@ function orientationText(facing) {
   }).join(', ');
 }
 
-const dirParam = (description) => ({ type: 'string', enum: DIRECTIONS, description });
+const DIRECTION_HELP = 'Relative to the robot: forward = the block at 0 0 1, back = 0 0 -1, left = 1 0 0, right = -1 0 0, '
+  + 'up = 0 1 0, down = 0 -1 0.';
+const dirParam = (description) => ({ type: 'string', enum: DIRECTIONS, description: `${description} ${DIRECTION_HELP}` });
+const WORLD_PARAM = { type: 'boolean', description: 'true if x y z are world (Minecraft) coordinates instead of relative ones. Default false.' };
+// A block given by position, for destroy / place / attack.
+const TARGET_PARAMS = {
+  x: { type: 'integer', description: 'Instead of direction: the block\'s x (the robot walks next to it first if needed).' },
+  y: { type: 'integer' },
+  z: { type: 'integer' },
+  world: WORLD_PARAM,
+};
 
 /**
  * @param {object} deps
@@ -131,6 +141,53 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     return `The block ${where} went from ${before} to ${after}. ${game}`;
   }
 
+  /** Which of the six directions leads from the robot's cell to a face-adjacent cell, or null. */
+  function directionTo(pose, x, y, z) {
+    return DIRECTIONS.find((d) => {
+      const [dx, dy, dz] = offsetOf(d, pose.facing);
+      return pose.x + dx === x && pose.y + dy === y && pose.z + dz === z;
+    }) || null;
+  }
+
+  /**
+   * destroy / place / attack on a block given either as a direction or as coordinates. With
+   * coordinates the robot first walks to a cell beside the block (never into it), then acts in the
+   * right direction. Returns { direction, note } or { error }.
+   */
+  async function reach({ direction, x, y, z, world: isWorld }) {
+    if (direction !== undefined && direction !== null && direction !== '') {
+      checkDirection(direction);
+      return { direction, note: '' };
+    }
+    if (![x, y, z].every((v) => Number.isFinite(Number(v)))) {
+      throw new Error('give a direction (forward, back, left, right, up, down) or the block\'s x y z');
+    }
+    const pose = await getAgentPose(bridge);
+    const frame = await frameNow(pose);
+    const target = isWorld ? [x, y, z].map(Number) : frame.to(...[x, y, z].map(Number));
+    if (target[0] === pose.x && target[1] === pose.y && target[2] === pose.z) {
+      return { error: 'That is the robot\'s own cell (0 0 0). Give the block next to it, e.g. direction "forward" for 0 0 1.' };
+    }
+    const adjacent = directionTo(pose, ...target);
+    if (adjacent) return { direction: adjacent, note: '' };
+
+    // Walk to any free cell sharing a face with the target.
+    const cells = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+      .map(([dx, dy, dz]) => [target[0] + dx, target[1] + dy, target[2] + dz])
+      .filter((c) => world.state(...c) !== 'solid');
+    if (!cells.length) return { error: 'Every side of that block is solid, so the robot can\'t get next to it.' };
+    const lines = await captureNavigatorLog(() => navigator.pathfindwalk(
+      { goal: { x: target[0], y: target[1], z: target[2], cells, label: 'next to the target block' } }, {},
+    ));
+    const after = await getAgentPose(bridge);
+    const dir = directionTo(after, ...target);
+    const afterFrame = await frameNow(after);
+    if (!dir) {
+      return { error: `Couldn't get next to that block: ${lines.map((l) => afterFrame.convertText(l)).join(' ')}` };
+    }
+    return { direction: dir, note: `Walked next to it first (${countMoved(pose, after)} blocks). ${afterMove(afterFrame)} ` };
+  }
+
   // --- Looking around ---------------------------------------------------------
 
   add({
@@ -154,7 +211,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       const player = await playerPosition();
       if (player) {
         const dist = Math.hypot(player.x - pose.x, player.y - pose.y, player.z - pose.z);
-        lines.push(`Player ${bridge.player || ''}: at ${frame.fmt(player.x, player.y, player.z)} (roughly; this may be eye height), `
+        lines.push(`Player ${bridge.player || ''}: at ${frame.fmt(player.x, player.y, player.z)}`
+          + `${frame.relative ? ` (world ${player.x} ${player.y} ${player.z})` : ''} (roughly; this may be eye height), `
           + `${dist.toFixed(1)} blocks from the robot${where(player) ? `, in ${where(player)}` : ''}.`);
       }
       const s = sight();
@@ -203,15 +261,16 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
             required: ['x', 'y', 'z'],
           },
         },
+        world: WORLD_PARAM,
       },
       required: ['positions'],
     },
-    async run({ positions }) {
+    async run({ positions, world: isWorld }) {
       if (!Array.isArray(positions) || !positions.length) throw new Error('positions must be a non-empty list of {x, y, z}');
       const list = positions.slice(0, MAX_BLOCKS_QUERY).map((p) => [p.x, p.y, p.z].map((v) => Math.round(Number(v))));
       if (list.some((p) => p.some((v) => !Number.isFinite(v)))) throw new Error('every position needs numeric x, y and z');
       const frame = await frameNow();
-      const blocks = await Promise.all(list.map((p) => blockAt(...frame.to(...p))));
+      const blocks = await Promise.all(list.map((p) => blockAt(...(isWorld ? p : frame.to(...p)))));
       return list.map((p, i) => `${p.join(' ')}: ${blocks[i]}`).join('\n');
     },
   });
@@ -220,8 +279,9 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'move',
-    description: 'Move the robot a few blocks in a straight line, relative to where it faces (left/right move sideways without turning). '
-      + 'Stops early if something solid is in the way and says what. For longer trips use go_to.',
+    description: 'Move the robot 1-64 blocks in a straight line: forward/back along where it faces, left/right sideways without '
+      + 'turning, up/down vertically. It can\'t enter solid blocks: it stops before one and says what blocked it (use destroy '
+      + 'to clear it). Best for short, exact moves within sight; for far or winding trips use go_to.',
     parameters: {
       type: 'object',
       properties: {
@@ -248,8 +308,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       if (!result.step) return `Couldn't move: ${result.reason}.`;
       const blocker = await blockAt(...result.step.enters);
       if (isSolid(blocker)) world.markBlocked(...result.step.enters);
-      return `Moved ${moved} of ${n} blocks ${direction}, then was blocked by ${blocker} (now at ${frame.fmt(...result.step.enters)}). `
-        + `${afterMove(frame)}${await playerLine(frame)}`;
+      return `Moved ${moved} of ${n} blocks ${direction}, then was blocked by ${blocker} (now at ${frame.fmt(...result.step.enters)}, `
+        + `directly ${direction} of you: "destroy ${direction}" would break it). ${afterMove(frame)}${await playerLine(frame)}`;
     },
   });
 
@@ -287,18 +347,21 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'go_to',
-    description: 'Travel to coordinates, to the player or to a named area, planning a route around obstacles, scanning unknown ground on the way and '
-      + 'checking every step. If the target is a solid block, the robot stops next to it. Takes a while for long trips.',
+    description: 'Pathfinding: travel to coordinates, to the player or to a named area, planning a route around obstacles and '
+      + 'scanning unknown ground on the way. Meant for longer trips (beyond a few blocks, out of sight, or around walls): it is '
+      + 'slow. For a block or two use move; to break or place a block use destroy/place with its x y z instead. '
+      + 'If the target is a solid block, the robot stops beside it.',
     parameters: {
       type: 'object',
       properties: {
         x: { type: 'integer' }, y: { type: 'integer' }, z: { type: 'integer' },
         target: { type: 'string', enum: ['coordinates', 'player', 'area'], description: '"player" goes next to the player, "area" to the middle of a named area; both ignore x/y/z. Default "coordinates".' },
         area: { type: 'string', description: 'Name of the area, with target "area".' },
+        world: WORLD_PARAM,
         fly: { type: 'boolean', description: 'Take the straightest route through the air instead of staying close to the ground (default false).' },
       },
     },
-    async run({ x, y, z, target, fly, area }) {
+    async run({ x, y, z, target, fly, area, world: isWorld }) {
       let args;
       if (target === 'player') args = ['@p'];
       else if (target === 'area' || (area && ![x, y, z].every((v) => Number.isFinite(Number(v))))) {
@@ -309,7 +372,20 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       } else {
         if (![x, y, z].every((v) => Number.isFinite(Number(v)))) throw new Error('give x, y and z, or target "player"');
         const frame = await frameNow();
-        args = frame.to(...[x, y, z].map((v) => Math.round(Number(v)))).map(String);
+        const pose = frame.pose;
+        const goal = [x, y, z].map((v) => Math.round(Number(v)));
+        const target = isWorld ? goal : frame.to(...goal);
+        // Pathfinding to a block right beside the robot is a mistake a model makes when it wants to act on it.
+        const dist = Math.max(Math.abs(target[0] - pose.x), Math.abs(target[1] - pose.y), Math.abs(target[2] - pose.z));
+        if (dist <= 3 && world.state(...target) === 'solid') {
+          const dir = directionTo(pose, ...target);
+          return dir
+            ? `Not moving: that block is right beside you (${dir}). To break it use destroy with direction "${dir}"; `
+              + 'to stand elsewhere, use move.'
+            : `Not moving: that is a solid block only ${dist} block(s) away. To break or place a block, call destroy/place with `
+              + 'its x y z (they walk beside it on their own); for short moves use move.';
+        }
+        args = target.map(String);
       }
       const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly) }));
       const frame = await frameNow();
@@ -335,41 +411,50 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'destroy',
-    description: 'Break the block next to the robot in a direction (the drop may land in the robot\'s inventory or on the ground).',
+    description: 'Break one block. The robot stays where it is and breaks the block beside it in the given direction: it never '
+      + 'moves into the block. Give either a direction (for a block touching the robot) or the block\'s x y z (any distance: '
+      + 'the robot first walks to a spot beside it). The drop may go into the robot\'s inventory or onto the ground.',
     destructive: true,
-    parameters: { type: 'object', properties: { direction: dirParam('Which neighbouring block.') }, required: ['direction'] },
-    async run({ direction }) {
-      checkDirection(direction);
-      return actOnCell('destroy', direction);
+    parameters: { type: 'object', properties: { direction: dirParam('Which neighbouring block.'), ...TARGET_PARAMS } },
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      return r.note + await actOnCell('destroy', r.direction);
     },
   });
 
   add({
     name: 'place',
-    description: 'Place a block from one of the robot\'s inventory slots (1-27) into the empty cell next to it.',
+    description: 'Place a block from one of the robot\'s inventory slots (1-27) into an empty cell. The robot stays where it is '
+      + 'and fills the cell beside it in the given direction. Give either a direction or the empty cell\'s x y z (any distance: '
+      + 'the robot first walks to a spot beside it).',
     parameters: {
       type: 'object',
       properties: {
         slot: { type: 'integer', minimum: 1, maximum: 27 },
-        direction: dirParam('Where to place it.'),
+        direction: dirParam('Which neighbouring cell to fill.'),
+        ...TARGET_PARAMS,
       },
-      required: ['slot', 'direction'],
+      required: ['slot'],
     },
-    async run({ slot, direction }) {
-      checkDirection(direction);
-      return actOnCell('place', direction, `${clampInt(slot, 1, 27)} `);
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      return r.note + await actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `);
     },
   });
 
   add({
     name: 'attack',
-    description: 'Attack whatever mob or player is next to the robot in a direction.',
+    description: 'Attack whatever mob or player is in the cell beside the robot in a direction (or at x y z: the robot walks '
+      + 'beside it first).',
     destructive: true,
-    parameters: { type: 'object', properties: { direction: dirParam('Which way to attack.') }, required: ['direction'] },
-    async run({ direction }) {
-      checkDirection(direction);
-      const res = await bridge.sendCommand(`agent attack ${direction}`);
-      return `The game said: "${res.statusMessage}".`;
+    parameters: { type: 'object', properties: { direction: dirParam('Which way to attack.'), ...TARGET_PARAMS } },
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      const res = await bridge.sendCommand(`agent attack ${r.direction}`);
+      return `${r.note}Attacked ${r.direction}. The game said: "${res.statusMessage}".`;
     },
   });
 
