@@ -1,1 +1,140 @@
-# minecraft-ptolemy
+# Ptolemy
+
+**An LLM, a Minecraft agent, and a bad idea.**
+
+Minecraft Bedrock Edition still ships the `agent` command it inherited from Education Edition: a small,
+indestructible robot that does exactly one thing per command and never checks whether it worked.
+Bedrock can also open a WebSocket to an external program with `/connect`, which lets that program run
+commands in the world without any mods.
+
+Ptolemy connects the two. The end goal is an MCP-style loop where an LLM drives the agent. It is slow,
+it wastes tokens, and it is awesome.
+
+## The idea: make the agent a closed-loop system
+
+On its own, the agent is an **open-loop** controller. It receives a command, executes it, and doesn't
+care what actually happened. For an LLM to control it properly, the loop has to be closed: sense,
+act, sense again. Doing that naively means re-scanning the surroundings after every step, which
+is painfully slow.
+
+The fix is to scan less. Ptolemy works like a **Roomba**:
+
+1. You give it a bounded region (a coordinate box) that the agent must stay inside.
+2. It maps that region once and remembers every block.
+3. After each action it only re-scans a small neighbourhood around the agent and updates the map.
+
+The LLM reasons over the stored map, and the game is only asked about what might have changed.
+
+## Status
+
+| Piece | State |
+| --- | --- |
+| WebSocket bridge to Minecraft | ✅ Working |
+| WebUI: header with connection status | ✅ Working |
+| Manual mode: raw command console | ✅ Working |
+| Information panel (connection info, response inspector) | ✅ Basic |
+| Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
+| Bounded-region mapping (the Roomba part) | 🔜 Planned |
+| Automatic mode: LLM control (NVIDIA Build, text-generation-webui, LM Studio) | 🔜 Planned |
+| Instructions from in-game chat | 🔜 Planned (chat is already captured) |
+
+## Requirements
+
+- **Node.js 18 or newer**
+- **Minecraft Bedrock Edition**, unmodded. No add-ons or behaviour packs are required.
+- A world with **cheats enabled**.
+- In Minecraft: `Settings → General → Require Encrypted Websockets` turned **off**.
+- For `agent` commands, turn on **Education Edition** in the world settings (under *Cheats* /
+  *Experiments*, depending on your game version). Without it the game rejects `agent` commands, while
+  other commands still work.
+
+## Quick start
+
+```bash
+npm install
+npm run start
+```
+
+Then:
+
+1. Open **http://localhost:3000** in your browser.
+2. In Minecraft, open chat and run:
+   ```
+   /connect localhost:8080
+   ```
+   (If Minecraft runs on another device, use the PC's LAN IP instead of `localhost`. Hover the connect
+   command in the WebUI to see the addresses.)
+3. The header switches to **Connected as &lt;your name&gt;**. Type commands into the Manual console, e.g.
+   ```
+   agent create
+   agent move forward
+   agent turn left
+   agent detect forward
+   agent tp 0 64 0
+   ```
+
+The leading `/` is optional. Click a response line to see the raw JSON the game sent back in the
+Information panel.
+
+### Configuration
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `PTOLEMY_UI_PORT` | `3000` | Port for the WebUI (HTTP and its own WebSocket at `/ui`) |
+| `PTOLEMY_MC_PORT` | `8080` | Port Minecraft connects to with `/connect` |
+
+## How it works
+
+```
+ ┌──────────────┐  /connect   ┌──────────────────────────┐   ws /ui   ┌─────────┐
+ │  Minecraft   │ ──────────▶ │  Ptolemy (Node.js)       │ ◀────────▶ │  WebUI  │
+ │  Bedrock     │ ◀────────── │  • MinecraftBridge :8080 │            │ browser │
+ └──────────────┘  commands / │  • WebServer       :3000 │            └─────────┘
+                   responses  └──────────────────────────┘
+```
+
+- **`src/minecraft/bridge.js`** is the WebSocket server the game connects to. It wraps every command
+  in Bedrock's `commandRequest` envelope, matches each `commandResponse` to its request by
+  `requestId`, and returns a promise per command. It caps how many commands are in flight, because
+  Bedrock silently drops requests beyond about 100. It also times out commands that get no answer
+  and subscribes to `PlayerMessage` so in-game chat reaches the UI.
+- **`src/web/server.js`** serves `public/` and relays status, commands, responses and chat to every
+  open browser tab. It keeps a short log history, so a refreshed tab picks up where it left off.
+- **`public/`** is the WebUI in plain HTML, CSS and JS, with no build step.
+
+The only runtime dependency is [`ws`](https://github.com/websockets/ws), the WebSocket library.
+Everything else is Node's standard library.
+
+### Bedrock WebSocket message format
+
+Command request sent to the game:
+
+```json
+{
+  "header": { "requestId": "<uuid>", "messagePurpose": "commandRequest", "version": 1, "messageType": "commandRequest" },
+  "body":   { "commandLine": "agent move forward", "version": 1, "origin": { "type": "player" } }
+}
+```
+
+The game answers with `messagePurpose: "commandResponse"` and the same `requestId`. `body.statusCode`
+is `0` on success and negative on failure. `body.statusMessage` is human-readable, and some commands
+add extra fields.
+
+## Project layout
+
+```
+src/
+  index.js               entry point (npm run start)
+  minecraft/bridge.js    Minecraft WebSocket bridge
+  web/server.js          static file server + WebUI socket
+public/
+  index.html, style.css, app.js   the WebUI
+abandoned-minimap-project/        old prototype, kept for reference only
+```
+
+## Safety notes
+
+- `/connect` gives Ptolemy the same command permissions as your player. Only run it on worlds you
+  don't mind a robot (or an LLM) messing with.
+- The Minecraft port accepts any client on your network. Don't expose it to the internet.
+- The agent cannot be killed or removed. You have been warned. You were warned before that, too.
