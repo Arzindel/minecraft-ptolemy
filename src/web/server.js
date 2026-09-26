@@ -7,6 +7,8 @@ const path = require('path');
 const WebSocket = require('ws');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
+const SRC_DIR = path.join(__dirname, '..');
+const STARTED_AT = Date.now();
 const LOG_HISTORY = 500;
 
 const MIME_TYPES = {
@@ -96,6 +98,13 @@ class WebServer {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
 
+    // The WebUI is re-read from disk on every page load, but the server code only on
+    // start-up, so after a `git pull` the page can be newer than the server behind it.
+    if (codeChangedSinceStart()) {
+      this._addLog('system', 'Ptolemy\'s server code changed since it was started. '
+        + 'Stop it and run `npm run start` again, or new features may not work.');
+    }
+
     ws.on('message', (data) => {
       let msg;
       try {
@@ -106,8 +115,11 @@ class WebServer {
 
       switch (msg.type) {
         case 'command':
-          if (String(msg.text || '').trim().startsWith('#')) {
-            this._runConsoleCommand(msg.text.trim().slice(1));
+          // `#name` (or `/#name`) is for Ptolemy itself; everything else goes to the game,
+          // where the leading slash is optional.
+          const consoleCommand = String(msg.text || '').trim().match(/^\/*#(.*)$/s);
+          if (consoleCommand) {
+            this._runConsoleCommand(consoleCommand[1].trim());
           } else {
             this.bridge.sendCommand(msg.text);
           }
@@ -213,6 +225,16 @@ function summarizeAgentResult(commandName, result) {
     .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
     .join('  ');
   return prefix + (text || '(empty result)');
+}
+
+function codeChangedSinceStart(dir = SRC_DIR) {
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, item.name);
+    if (item.isDirectory() ? codeChangedSinceStart(full) : fs.statSync(full).mtimeMs > STARTED_AT) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** LAN IPv4 addresses, so the UI can suggest a `/connect` target for other devices. */

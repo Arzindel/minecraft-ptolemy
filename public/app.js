@@ -181,7 +181,7 @@
     el.inspectCaption.textContent = entry.kind === 'agent' ? 'AgentCommand event'
       : entry.kind === 'event' ? `${entry.commandLine} event`
         : entry.kind === 'system' ? entry.text
-          : entry.commandLine ? `/${entry.commandLine}` : 'Response';
+          : entry.commandLine || 'Response';
     el.inspect.textContent = JSON.stringify(
       entry.body ?? { statusCode: entry.statusCode, statusMessage: entry.text },
       null,
