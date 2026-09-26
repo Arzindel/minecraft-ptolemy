@@ -128,7 +128,15 @@ class MinecraftBridge extends EventEmitter {
     this._emitStatus();
 
     socket.on('message', (data) => this._onMessage(data));
-    socket.on('error', (err) => this.emit('log', `Minecraft socket error: ${err.message}`));
+    socket.on('error', (err) => {
+      if (/invalid status code 0/.test(err.message)) {
+        // Minecraft sometimes drops a fresh connection with a malformed close frame
+        // and immediately reconnects; nothing we can (or need to) do about it.
+        this.emit('log', 'Minecraft dropped the connection with a malformed close frame; it usually reconnects on its own.');
+        return;
+      }
+      this.emit('log', `Minecraft socket error: ${err.message}`);
+    });
     socket.on('close', () => {
       if (this.socket !== socket) return; // an older, replaced socket
       this.socket = null;
