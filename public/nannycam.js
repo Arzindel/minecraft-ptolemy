@@ -183,6 +183,7 @@
   // Planned routes by kind: { cells: [[x, y, z], ...] starting at the robot, trail: already walked }
   const paths = { walk: { cells: [], trail: false }, fly: { cells: [], trail: false } };
   let agentPos = [0, 0, 0];
+  let areas = []; // named areas from World Memory, outlined with small beads
   let visible = new Map(); // "x,y,z" -> block name, for hover lookups
   const camera = { yaw: Math.PI / 4, pitch: 0.6, distance: 28 };
 
@@ -245,6 +246,29 @@
         beads.push(x + 0.375, y + 0.375, z + 0.375, 0.25, ...PATH_COLORS[kind], walked ? 0.25 : 1);
       });
     }
+    // Named areas: their twelve edges, dotted, where they come within the zoom radius.
+    const AREA_COLORS = [[1, 0.85, 0.3], [0.5, 1, 0.5], [1, 0.55, 0.3], [0.6, 0.7, 1], [1, 0.5, 0.8]];
+    const near = (x, y, z) => Math.max(Math.abs(x - ax), Math.abs(y - ay), Math.abs(z - az)) <= radius + 1;
+    areas.forEach((a, i) => {
+      const color = AREA_COLORS[i % AREA_COLORS.length];
+      const lo = a.min;
+      const hi = a.max.map((v) => v + 1); // outer faces of the last blocks
+      for (let axis = 0; axis < 3; axis++) {
+        const [u, v] = [0, 1, 2].filter((k) => k !== axis);
+        for (const cu of [lo[u], hi[u]]) {
+          for (const cv of [lo[v], hi[v]]) {
+            const len = hi[axis] - lo[axis];
+            const step = len > 64 ? len / 64 : 0.5;
+            for (let t = lo[axis]; t <= hi[axis] + 1e-6; t += step) {
+              const pnt = [0, 0, 0];
+              pnt[axis] = t; pnt[u] = cu; pnt[v] = cv;
+              if (!near(pnt[0], pnt[1], pnt[2])) continue;
+              beads.push(pnt[0] - 0.06, pnt[1] - 0.06, pnt[2] - 0.06, 0.12, ...color, 0.9);
+            }
+          }
+        }
+      }
+    });
     upload(batches.path, beads);
 
     info.textContent = `${sight.scanned.toLocaleString()} blocks scanned at ${ax} ${ay} ${az}, `
@@ -325,6 +349,11 @@
   }
 
   new ResizeObserver(requestDraw).observe(canvas);
+
+  document.addEventListener('ptolemy:memory', (ev) => {
+    areas = (ev.detail.world && ev.detail.world.areas) || [];
+    rebuild();
+  });
 
   // --- Mouse: drag to orbit, wheel to move the camera, hover to identify ------
 

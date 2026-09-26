@@ -55,12 +55,15 @@
       const who = document.createElement('span');
       who.className = 'pilot-who';
       who.textContent = entry.kind === 'user'
-        ? (entry.source === 'chat' ? `${entry.sender || 'Player'} (chat)` : 'You')
-        : entry.kind === 'assistant' ? 'Ptolemy' : entry.kind === 'error' ? 'Error' : '';
+        ? (entry.source === 'chat' ? `${entry.sender || 'Player'} (chat)` : entry.source === 'wonder' ? 'Wondering' : 'You')
+        : entry.kind === 'assistant' ? (entry.source === 'chat' ? 'Ptolemy → chat' : 'Ptolemy')
+          : entry.kind === 'notice' ? 'Ptolemy says' : entry.kind === 'error' ? 'Error' : '';
       who.title = time;
       const text = document.createElement('span');
       text.className = 'pilot-text';
-      text.textContent = entry.text;
+      // The wondering prompt is long and always the same: show a short stand-in.
+      text.textContent = entry.kind === 'user' && entry.source === 'wonder' ? '(idle for a while: act natural)' : entry.text;
+      if (entry.kind === 'user' && entry.source === 'wonder') li.classList.add('pilot-wonder');
       li.append(who, text);
     }
 
@@ -93,7 +96,7 @@
     stateEl.dataset.phase = s.phase;
     stateEl.textContent = (PHASES[s.phase] || s.phase) + (s.phase === 'tool' && s.detail ? ` ${s.detail}` : '')
       + (s.queued ? ` · ${s.queued} queued` : '');
-    modelEl.textContent = `${s.provider}${s.model ? ` · ${s.model}` : ''} · ${s.toolMode === 'text' ? 'text tools' : 'native tools'}`;
+    modelEl.textContent = `${s.endpoint}${s.model ? ` · ${s.model}` : ''} · ${s.toolMode === 'text' ? 'text tools' : 'native tools'}`;
     stopBtn.disabled = !s.running;
   });
 
@@ -117,8 +120,40 @@
     }
   });
 
+  // --- Wondering switch and countdown ---------------------------------------------
+
+  const wonderSwitch = $('wonder-switch');
+  const countdown = $('wonder-countdown');
+  let wonder = null;
+
+  wonderSwitch.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    window.ptolemy.send({ type: 'wonderMode', mode: b.dataset.mode });
+  }));
+
+  function renderCountdown() {
+    if (!wonder) return;
+    if (wonder.mode === 'off') countdown.textContent = '';
+    else if (wonder.blocked) countdown.textContent = `paused: ${wonder.blocked}`;
+    else if (wonder.nextAt) {
+      const s = Math.max(0, Math.ceil((wonder.nextAt - Date.now()) / 1000));
+      countdown.textContent = s ? `in ${s}s` : 'any moment';
+    }
+  }
+
+  document.addEventListener('ptolemy:wonder', (ev) => {
+    wonder = ev.detail;
+    wonderSwitch.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === wonder.mode)));
+    wonderSwitch.dataset.mode = wonder.mode;
+    renderCountdown();
+  });
+  setInterval(renderCountdown, 500);
+
   stopBtn.addEventListener('click', () => window.ptolemy.send({ type: 'pilotStop' }));
   resetBtn.addEventListener('click', () => window.ptolemy.send({ type: 'pilotReset' }));
 
-  document.addEventListener('ptolemy:tab', (ev) => { if (ev.detail === 'automatic') input.focus(); });
+  document.addEventListener('ptolemy:tab', (ev) => {
+    if (ev.detail !== 'automatic') return;
+    input.focus();
+    log.scrollTop = log.scrollHeight; // it may have filled while hidden
+  });
 })();

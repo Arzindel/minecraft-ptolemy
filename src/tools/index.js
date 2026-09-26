@@ -64,8 +64,15 @@ const dirParam = (description) => ({ type: 'string', enum: DIRECTIONS, descripti
  * @param {(radius: number, opts?: object) => Promise<object|null>} deps.scan
  * @param {(text: string, extra?: object) => void} deps.log
  * @param {() => object|null} deps.sight   the latest Sight (for status)
+ * @param {import('../world/manager').WorldManager} deps.worlds   world detection and memory
+ * @param {(text: string) => void} deps.notify   show a message in the WebUI
+ * @param {() => void} [deps.activity]   called after every tool call (resets the wondering countdown)
  */
-function createToolbox({ bridge, world, navigator, settings, scan, log, sight }) {
+function createToolbox({ bridge, world, navigator, settings, scan, log, sight, worlds, notify, activity }) {
+  const memory = () => {
+    if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
+    return worlds.current;
+  };
   const tools = [];
   const add = (tool) => tools.push(tool);
 
@@ -110,9 +117,12 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight })
     parameters: { type: 'object', properties: {} },
     async run() {
       const lines = [];
-      lines.push(`Minecraft: connected as ${bridge.player || 'unknown player'}.`);
+      lines.push(`Minecraft: connected as ${bridge.player || 'unknown player'}`
+        + `${worlds.current ? `, in the world "${worlds.current.name}"` : ''}.`);
       const pose = await getAgentPose(bridge);
-      lines.push(`Robot: at ${poseText(pose)}. Relative directions: ${orientationText(pose.facing)}.`);
+      const where = (p) => (worlds.current && worlds.current.describeAreasAt(p.x, p.y, p.z)) || null;
+      lines.push(`Robot: at ${poseText(pose)}${where(pose) ? `, in ${where(pose)}` : ''}. `
+        + `Relative directions: ${orientationText(pose.facing)}.`);
       const around = await Promise.all(DIRECTIONS.map(async (d) => {
         const [dx, dy, dz] = offsetOf(d, pose.facing);
         return `${d}: ${await blockAt(pose.x + dx, pose.y + dy, pose.z + dz)}`;
@@ -122,7 +132,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight })
       if (player) {
         const dist = Math.hypot(player.x - pose.x, player.y - pose.y, player.z - pose.z);
         lines.push(`Player ${bridge.player || ''}: at ${player.x} ${player.y} ${player.z} (roughly; this may be eye height), `
-          + `${dist.toFixed(1)} blocks from the robot.`);
+          + `${dist.toFixed(1)} blocks from the robot${where(player) ? `, in ${where(player)}` : ''}.`);
       }
       const s = sight();
       if (s) {
@@ -247,20 +257,26 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight })
 
   add({
     name: 'go_to',
-    description: 'Travel to coordinates (or to the player), planning a route around obstacles, scanning unknown ground on the way and '
+    description: 'Travel to coordinates, to the player or to a named area, planning a route around obstacles, scanning unknown ground on the way and '
       + 'checking every step. If the target is a solid block, the robot stops next to it. Takes a while for long trips.',
     parameters: {
       type: 'object',
       properties: {
         x: { type: 'integer' }, y: { type: 'integer' }, z: { type: 'integer' },
-        target: { type: 'string', enum: ['coordinates', 'player'], description: '"player" goes next to the player and ignores x/y/z. Default "coordinates".' },
+        target: { type: 'string', enum: ['coordinates', 'player', 'area'], description: '"player" goes next to the player, "area" to the middle of a named area; both ignore x/y/z. Default "coordinates".' },
+        area: { type: 'string', description: 'Name of the area, with target "area".' },
         fly: { type: 'boolean', description: 'Take the straightest route through the air instead of staying close to the ground (default false).' },
       },
     },
-    async run({ x, y, z, target, fly }) {
+    async run({ x, y, z, target, fly, area }) {
       let args;
       if (target === 'player') args = ['@p'];
-      else {
+      else if (target === 'area' || (area && ![x, y, z].every((v) => Number.isFinite(Number(v))))) {
+        const a = memory().findArea(area);
+        if (!a) throw new Error(`there's no area called "${area}"`);
+        // The middle of the area, at its floor: the pathfinder stops next to it if that's solid.
+        args = [Math.floor((a.min[0] + a.max[0]) / 2), a.min[1], Math.floor((a.min[2] + a.max[2]) / 2)].map(String);
+      } else {
         if (![x, y, z].every((v) => Number.isFinite(Number(v)))) throw new Error('give x, y and z, or target "player"');
         args = [x, y, z].map((v) => String(Math.round(Number(v))));
       }
@@ -356,12 +372,143 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight })
   // --- Talking, waiting, raw --------------------------------------------------
 
   add({
-    name: 'say',
-    description: 'Say something in the Minecraft chat, visible to everyone (keep it short).',
+    name: 'send_chat',
+    description: 'Send a message to the Minecraft chat, seen by every player (keep it short, no markdown). '
+      + 'Use it to tell players something even when the request came from the WebUI.',
     parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
     async run({ message }) {
       const res = await sayInChat(bridge, settings, String(message || ''));
-      return res.ok ? 'Said it.' : `Couldn't say it: ${res.statusMessage}`;
+      return res.ok ? 'Sent to the game chat.' : `Couldn't send it: ${res.statusMessage}`;
+    },
+  });
+
+  add({
+    name: 'send_webui',
+    description: 'Show a message to the person at the Ptolemy WebUI (highlighted in the Automatic tab), '
+      + 'even when the request came from the game chat.',
+    offline: true,
+    parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
+    async run({ message }) {
+      const text = String(message || '').trim();
+      if (!text) throw new Error('empty message');
+      notify(text.slice(0, 2000));
+      return 'Shown in the WebUI.';
+    },
+  });
+
+  // --- Memory (per world) -------------------------------------------------------
+
+  add({
+    name: 'get_memory',
+    description: 'Everything remembered about this world: named areas, the todo list, what\'s on your mind, notes, recent requests.',
+    offline: true,
+    parameters: { type: 'object', properties: {} },
+    async run() {
+      return memory().promptBlock();
+    },
+  });
+
+  add({
+    name: 'add_area',
+    description: 'Remember a named area (a box between two corners), e.g. "house" or "kitchen". An area inside another '
+      + 'is understood as part of it. Reusing a name moves that area. Give one corner for a single spot (e.g. "chest").',
+    offline: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        x1: { type: 'integer' }, y1: { type: 'integer' }, z1: { type: 'integer' },
+        x2: { type: 'integer' }, y2: { type: 'integer' }, z2: { type: 'integer' },
+        note: { type: 'string', description: 'Optional short description.' },
+      },
+      required: ['name', 'x1', 'y1', 'z1'],
+    },
+    async run({ name, x1, y1, z1, x2, y2, z2, note }) {
+      const corner2 = [x2, y2, z2].every((v) => v !== undefined && v !== null) ? [x2, y2, z2] : [x1, y1, z1];
+      const a = memory().setArea(name, [x1, y1, z1], corner2, note);
+      const parent = memory().parentOf(a);
+      return `Saved area "${a.name}": ${a.min.join(' ')} to ${a.max.join(' ')}${parent ? `, inside "${parent.name}"` : ''}.`;
+    },
+  });
+
+  add({
+    name: 'remove_area',
+    description: 'Forget a named area.',
+    offline: true,
+    parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+    async run({ name }) {
+      return memory().removeArea(name) ? `Forgot "${name}".` : `There's no area called "${name}".`;
+    },
+  });
+
+  add({
+    name: 'todo_write',
+    description: 'Replace your todo list for this world with this one. Use it to plan multi-step work and keep it current: '
+      + 'mark one item in_progress while you work on it and done when finished. Send the whole list every time.',
+    offline: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        todos: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { text: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'done'] } },
+            required: ['text', 'status'],
+          },
+        },
+      },
+      required: ['todos'],
+    },
+    async run({ todos }) {
+      memory().setTodos(todos);
+      const list = memory().data.todos;
+      return list.length ? `Todo list:\n${list.map((t) => `- [${t.status}] ${t.text}`).join('\n')}` : 'The todo list is empty.';
+    },
+  });
+
+  add({
+    name: 'add_thought',
+    description: 'Put something on your mind, a passing wish or curiosity ("I want to see the flowers by the river"). '
+      + 'You may act on it later, e.g. while wondering. Only the last few thoughts are kept.',
+    offline: true,
+    parameters: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] },
+    async run({ thought }) {
+      memory().addThought(thought);
+      return `On your mind now: ${memory().data.thoughts.map((t) => `"${t.text}"`).join(', ')}.`;
+    },
+  });
+
+  add({
+    name: 'drop_thought',
+    description: 'Let go of a thought (by its text or number), e.g. once you\'ve acted on it.',
+    offline: true,
+    parameters: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] },
+    async run({ thought }) {
+      const removed = memory().remove('thoughts', thought);
+      return removed ? `Let go of "${removed.text}".` : 'No such thought.';
+    },
+  });
+
+  add({
+    name: 'remember',
+    description: 'Save a fact about this world for good, e.g. "the chest with wood is at 10 64 5" or "the player likes birch".',
+    offline: true,
+    parameters: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] },
+    async run({ note }) {
+      memory().addNote(note);
+      return 'Noted.';
+    },
+  });
+
+  add({
+    name: 'forget',
+    description: 'Delete a saved note (by its text or number).',
+    offline: true,
+    parameters: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] },
+    async run({ note }) {
+      const removed = memory().remove('notes', note);
+      return removed ? `Forgot "${removed.text}".` : 'No such note.';
     },
   });
 
@@ -425,12 +572,14 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight })
       return { ok: false, text: known ? `The tool "${name}" is turned off in the Configuration tab.` : `There is no tool called "${name}".` };
     }
     log(`${origin} → ${name} ${JSON.stringify(args || {})}`);
-    if (!bridge.connected) return { ok: false, text: 'Minecraft is not connected, so the robot can\'t do anything right now.' };
+    if (!bridge.connected && !tool.offline) return { ok: false, text: 'Minecraft is not connected, so the robot can\'t do anything right now.' };
     try {
       const text = await tool.run(args || {}, { signal });
       return { ok: true, text: String(text) };
     } catch (err) {
       return { ok: false, text: `Error: ${err.message}` };
+    } finally {
+      if (activity) activity();
     }
   }
 
@@ -528,13 +677,26 @@ function safeWord(s) {
   return w;
 }
 
+// What the robot said recently, so its own lines coming back as chat events are never requests.
+const recentlySaid = [];
+
 /** A chat line from the robot, via tellraw so it shows its own name instead of the player's. */
 function sayInChat(bridge, settings, text) {
-  const name = settings.get('chat.name') || 'ptolemy';
+  const name = (settings.get('chat.name') || 'Ptolemy').trim();
   const display = name.charAt(0).toUpperCase() + name.slice(1);
   const clean = text.replace(/[\r\n]+/g, ' ').replace(/§/g, '').trim().slice(0, 400);
+  recentlySaid.push({ text: clean, time: Date.now() });
+  if (recentlySaid.length > 20) recentlySaid.shift();
   const json = JSON.stringify({ rawtext: [{ text: `§b<${display}>§r ${clean}` }] });
   return bridge.sendCommand(`tellraw @a ${json}`, { quiet: true });
 }
 
-module.exports = { createToolbox, sayInChat, summarizeScan };
+/** Is this chat message one of the robot's own lines echoing back? */
+function isOwnChat(message) {
+  const text = String(message || '');
+  if (/^§b</.test(text)) return true;
+  const plain = text.replace(/§./g, '');
+  return recentlySaid.some((r) => Date.now() - r.time < 30000 && plain.includes(r.text));
+}
+
+module.exports = { createToolbox, sayInChat, isOwnChat, summarizeScan };

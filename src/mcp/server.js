@@ -16,9 +16,10 @@ class McpServer {
    * @param {ReturnType<import('../tools').createToolbox>} deps.toolbox
    * @param {import('../settings').Settings} deps.settings
    * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
+   * @param {import('../world/manager').WorldManager} [deps.worlds]
    */
-  constructor({ toolbox, settings, bridge }) {
-    Object.assign(this, { toolbox, settings, bridge });
+  constructor({ toolbox, settings, bridge, worlds }) {
+    Object.assign(this, { toolbox, settings, bridge, worlds });
   }
 
   /** Handle an HTTP request to /mcp. */
@@ -105,7 +106,7 @@ class McpServer {
             description: t.description,
             inputSchema: t.parameters,
             annotations: {
-              readOnlyHint: ['get_status', 'scan', 'get_blocks'].includes(t.name),
+              readOnlyHint: ['get_status', 'scan', 'get_blocks', 'get_memory'].includes(t.name),
               destructiveHint: Boolean(t.destructive || t.raw),
             },
           })),
@@ -131,6 +132,8 @@ class McpServer {
           instructions: this.settings.get('llm.instructions'),
           tools: this.toolbox.list(),
           textMode: false,
+          memory: this.worlds && this.worlds.current ? this.worlds.current.promptBlock() : null,
+          source: 'mcp',
         });
         const task = params.arguments && params.arguments.task;
         return {

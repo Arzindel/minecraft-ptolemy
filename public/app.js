@@ -72,7 +72,13 @@
       case 'pilot':
       case 'pilotEntry':
       case 'pilotTranscript':
-      case 'llmModels':
+      case 'endpoints':
+      case 'endpointModels':
+      case 'wonder':
+      case 'worldStatus':
+      case 'memory':
+      case 'memoryError':
+      case 'positions':
         // For the Nanny Cam, the Automatic tab and the Configuration tab.
         document.dispatchEvent(new CustomEvent(`ptolemy:${msg.type}`, { detail: msg }));
         break;
@@ -257,7 +263,7 @@
   selectTab(initialTab);
 
   // Shared with the other scripts on the page (e.g. the Nanny Cam's Scan button).
-  window.ptolemy = { send };
+  window.ptolemy = { send, selectTab: (name) => selectTab(name) };
 
   connect();
 })();

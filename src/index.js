@@ -1,5 +1,7 @@
 'use strict';
 
+require('./env').loadEnv();
+
 const { MinecraftBridge } = require('./minecraft/bridge');
 const { WebServer } = require('./web/server');
 
@@ -41,6 +43,8 @@ async function main() {
     web.close();
     process.exit(0);
   };
+  // A bug in one request shouldn't take the whole server (and the game connection) down.
+  process.on('unhandledRejection', (err) => console.error('[ptolemy] Unhandled error:', err));
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
