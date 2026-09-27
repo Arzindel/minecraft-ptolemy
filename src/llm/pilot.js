@@ -32,9 +32,9 @@ const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'get_memory', 'todo_write'
  *   'cleared' the conversation was reset
  */
 class Pilot extends EventEmitter {
-  constructor({ settings, endpoints, toolbox, bridge, worlds }) {
+  constructor({ settings, endpoints, toolbox, bridge, worlds, commands }) {
     super();
-    Object.assign(this, { settings, endpoints, toolbox, bridge, worlds });
+    Object.assign(this, { settings, endpoints, toolbox, bridge, worlds, commands });
     this.turns = []; // [[{ role: 'user', text } | { role: 'assistant', text, calls, raw, api } | { role: 'results', results }]]
     this.transcript = [];
     this.queue = [];
@@ -377,6 +377,8 @@ class Pilot extends EventEmitter {
   /** The conversation as API messages, trimmed to the configured budget. */
   _render(config, tools, textMode) {
     const system = systemPrompt({
+      name: this.settings.get('chat.name') || 'Ptolemy',
+      commands: this.commands ? this.commands.promptCommands() : [],
       player: this.bridge.player,
       instructions: this.settings.get('llm.instructions'),
       tools,

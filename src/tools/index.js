@@ -88,8 +88,9 @@ const POSITION = {
  * @param {import('../world/manager').WorldManager} deps.worlds   world detection and memory
  * @param {(text: string) => void} deps.notify   show a message in the WebUI
  * @param {() => void} [deps.activity]   called after every tool call (resets the wondering countdown)
+ * @param {(mode: string) => void} [deps.setWonder]   switch wondering off / on / always
  */
-function createToolbox({ bridge, world, navigator, settings, scan, log, sight, worlds, notify, activity }) {
+function createToolbox({ bridge, world, navigator, settings, scan, log, sight, worlds, notify, activity, setWonder }) {
   const memory = () => {
     if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
     return worlds.current;
@@ -662,23 +663,114 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'remember',
-    description: 'Save a fact about this world for good, e.g. "the chest with wood is at 10 64 5" or "the player likes birch".',
+    description: 'Your long-term memory for this world: save something to keep for good, e.g. "Arzindel likes birch wood", '
+      + '"the wood chest is in the storage room", "never break the glass in the kitchen". Use it whenever someone asks you to '
+      + 'remember something, or you learn something worth keeping. To change an existing entry, pass replace with its '
+      + 'number or some of its text.',
     offline: true,
-    parameters: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] },
-    async run({ note }) {
+    parameters: {
+      type: 'object',
+      properties: {
+        note: { type: 'string', description: 'What to remember (no coordinates: name places with add_area instead).' },
+        replace: { type: 'string', description: 'Optional: the number or some text of an entry to overwrite with this one.' },
+      },
+      required: ['note'],
+    },
+    async run({ note, replace }) {
+      if (replace) {
+        const old = memory().updateNote(replace, note);
+        if (old === null) throw new Error(`there's no memory matching "${replace}"`);
+        return `Updated: "${old}" is now "${note}".`;
+      }
       memory().addNote(note);
-      return 'Noted.';
+      return `Remembered (entry ${memory().data.notes.length}).`;
     },
   });
 
   add({
     name: 'forget',
-    description: 'Delete a saved note (by its text or number).',
+    description: 'Drop an entry from your long-term memory (by its number or some of its text).',
     offline: true,
     parameters: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] },
     async run({ note }) {
       const removed = memory().remove('notes', note);
       return removed ? `Forgot "${removed.text}".` : 'No such note.';
+    },
+  });
+
+  // --- Changing itself (so players can do it from the game chat, no WebUI needed) --------
+
+  add({
+    name: 'set_name',
+    description: 'Change your own name, e.g. when told "your name is now Boris". It becomes the word that calls you in the '
+      + 'game chat and the name your chat messages are signed with. Optionally also change the ignore word (a word that '
+      + 'means "we\'re talking about you, not to you").',
+    offline: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'One word: letters, digits or _.' },
+        ignore_word: { type: 'string', description: 'Optional new ignore word, also one word.' },
+      },
+      required: ['name'],
+    },
+    async run({ name, ignore_word: ignore }) {
+      const clean = String(name || '').trim();
+      if (!/^[A-Za-z0-9_]{2,24}$/.test(clean)) throw new Error('the name must be one word of 2-24 letters, digits or _');
+      const patch = { 'chat.name': clean };
+      if (ignore) {
+        if (!/^[A-Za-z0-9_]{2,24}$/.test(String(ignore).trim())) throw new Error('the ignore word must be one word of 2-24 letters, digits or _');
+        patch['chat.ignore'] = String(ignore).trim();
+      }
+      const old = settings.get('chat.name');
+      settings.update(patch);
+      return `Your name is now ${clean} (was ${old}). Players call you by writing "${clean}" in the chat`
+        + `${settings.get('chat.ignore') ? `; messages containing "${settings.get('chat.ignore')}" are ignored` : ''}.`;
+    },
+  });
+
+  add({
+    name: 'set_wondering',
+    description: 'Switch wondering (acting on your own when idle): "off", "on" (until someone asks for something) or "always". '
+      + 'Optionally set how many idle seconds come before each wander. Use it when a player tells you to go do your own '
+      + 'thing, or to stop wandering around.',
+    offline: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['off', 'on', 'always'] },
+        idle_seconds: { type: 'integer', minimum: 5, maximum: 3600 },
+      },
+      required: ['mode'],
+    },
+    async run({ mode, idle_seconds: seconds }) {
+      if (!['off', 'on', 'always'].includes(mode)) throw new Error('mode must be off, on or always');
+      if (seconds !== undefined && seconds !== null) settings.update({ 'wonder.interval': seconds });
+      if (setWonder) setWonder(mode);
+      else settings.update({ 'wonder.mode': mode });
+      return `Wondering is ${mode}${mode === 'off' ? '' : `, after ${settings.get('wonder.interval')}s idle`}.`;
+    },
+  });
+
+  add({
+    name: 'set_world_instructions',
+    description: 'Standing rules for how you behave in this world, e.g. "never go into the basement", "build with '
+      + 'cobblestone". Add a rule, or replace them all. These are part of your long-term memory for this world.',
+    offline: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        mode: { type: 'string', enum: ['add', 'replace'], description: 'Default "add": append a new line.' },
+      },
+      required: ['text'],
+    },
+    async run({ text, mode }) {
+      const m = memory();
+      const clean = String(text || '').trim();
+      const next = mode === 'replace' ? clean : [m.data.instructions.trim(), clean].filter(Boolean).join('\n');
+      m.setInstructions(next);
+      return `Instructions for this world are now:\n${m.data.instructions || '(none)'}`;
     },
   });
 
@@ -733,15 +825,22 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   let requester = null;
   let requesterAsked = false;
 
+  // Descriptions can be edited in the WebUI's Commands tab (see src/commands.js).
+  let describe = (t) => t.description;
+  function setDescriber(fn) {
+    describe = fn;
+  }
+
   /** The tools currently enabled by the settings; without `flight`, no teleporting and no flying. */
   function list({ flight = true } = {}) {
     return tools.filter((t) => (!t.raw || settings.get('tools.allowRaw'))
       && (!t.destructive || settings.get('tools.allowDestructive'))
       && (flight || !t.flight))
       .map((t) => {
-        if (flight || !t.parameters.properties || !t.parameters.properties.fly) return t;
+        const described = { ...t, description: describe(t) };
+        if (flight || !t.parameters.properties || !t.parameters.properties.fly) return described;
         const { fly, ...props } = t.parameters.properties;
-        return { ...t, parameters: { ...t.parameters, properties: props } };
+        return { ...described, parameters: { ...t.parameters, properties: props } };
       });
   }
 
@@ -779,7 +878,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     navigator.stop({ quiet: true });
   }
 
-  return { list, call, tools, stopRobot };
+  return { list, call, tools, stopRobot, setDescriber };
 }
 
 /** A scan, told the way a model can use it. */

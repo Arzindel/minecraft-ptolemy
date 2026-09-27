@@ -8,8 +8,8 @@
  * start of a prompt (LM Studio, llama.cpp, Anthropic) can reuse it. Everything that changes from
  * call to call (positions, memory, where the request came from) goes in contextBlock() instead.
  */
-function systemPrompt({ player, instructions, tools, textMode }) {
-  const parts = [`You are Ptolemy, the pilot of a small robot (the Minecraft "agent") in a Minecraft Bedrock world. \
+function systemPrompt({ player, instructions, tools, textMode, name = 'Ptolemy', commands = [] }) {
+  const parts = [`You are ${name}, the pilot of a small robot (the Minecraft "agent") in a Minecraft Bedrock world. \
 You control it only through your tools. You live with ${player || 'the player'}, who talks to you from the Ptolemy WebUI or \
 the in-game chat.
 
@@ -72,7 +72,14 @@ You have a memory for this world, kept between sessions (shown in the [Now] bloc
 a place, save it with add_area. Use go_to with target "area" to visit one.
 - A todo list: for anything that takes several steps, write a plan with todo_write and keep it current.
 - What's on your mind: passing wishes and curiosities (add_thought / drop_thought). Have some personality.
-- Notes: facts worth keeping (remember / forget).
+- Long-term memory: lasting facts, preferences and promises, numbered. When someone asks you to remember something, or \
+you learn something worth keeping, save it with remember; change an entry with remember + replace, drop one with forget.
+- Instructions for this world: standing rules (set_world_instructions), e.g. "never break the glass".
+
+# Changing yourself
+Players can change you from the game chat, so these are yours to use when asked:
+- set_name: "your name is now Boris" → set_name {name: "Boris"}. Players then call you by that name.
+- set_wondering: "go do your own thing" → set_wondering {mode: "on"} (or "always"); "stop wandering around" → "off".
 
 # How to work
 - The newest message ends with a [Now] block: where things are right now, your memory, and where the request came from. \
@@ -87,6 +94,12 @@ Keep it short and plain: no markdown, no lists. A quick word while you work is f
 - When the task is done (or impossible), stop calling tools and answer with one or two sentences saying what you did \
 or what went wrong. That answer ends your turn.`];
 
+  // Minecraft commands the model may use through run_command (chosen and described in the Commands tab).
+  if (commands.length && (!tools || tools.some((t) => t.name === 'run_command'))) {
+    parts.push(`# Minecraft commands for run_command
+Besides your tools, these Minecraft commands are useful with run_command (no leading slash, world coordinates only):
+${commands.map((c) => `- ${c.cmd}${c.usage ? ` ${c.usage}` : ''}: ${c.description}`).join('\n')}`);
+  }
   if (textMode) parts.push(textToolInstructions(tools));
   if (instructions && instructions.trim()) parts.push(`# Extra instructions from the player\n${instructions.trim()}`);
   return parts.join('\n\n');

@@ -62,6 +62,7 @@
   const worldBody = card('World', 'world');
   const nowBody = card('Right now', 'now');
   root.insertBefore(connectionCard, nowBody.parentElement.nextSibling);
+  root.insertBefore(document.getElementById('dash-settings-card'), connectionCard.nextSibling);
   const todoBody = card('Todo list', 'todos', (() => {
     const b = el('button', { type: 'button', className: 'btn btn-ghost btn-small', textContent: 'Clear done' });
     b.addEventListener('click', () => op('todoClearDone'));
@@ -78,9 +79,9 @@
   const areaList = el('div', { className: 'area-list' });
   areaBody.append(areaList, areaForm());
 
-  const noteBody = card('Notes', 'notes');
+  const noteBody = card('Long-term memory', 'notes');
   const noteList = el('ul', { className: 'dash-list' });
-  noteBody.append(noteList, adder('A fact worth keeping, e.g. "the wood chest is at 10 64 5"', (text) => op('noteAdd', { text }), 'Save'));
+  noteBody.append(noteList, adder('Something to keep for good, e.g. "Arzindel likes birch"', (text) => op('noteAdd', { text }), 'Save'));
 
   const journalBody = card('Recent activity', 'journal');
   const instructionsBody = card('Instructions for this world', 'instructions');
@@ -256,8 +257,9 @@
       areaList.append(el('p', { className: 'muted small', textContent: 'No areas yet. Name the places the robot should know: a house, the kitchen in it, the farm...' }));
     }
 
-    for (const n of w.notes) list(noteList, el('li', {}, el('span', { className: 'grow', textContent: n.text }), removeButton('Forget', () => op('noteRemove', { id: n.id }))));
-    if (!w.notes.length) noteList.append(el('li', { className: 'muted', textContent: 'No notes yet.' }));
+    w.notes.forEach((n, i) => list(noteList, el('li', {}, el('span', { className: 'muted small', textContent: `${i + 1}.` }),
+      el('span', { className: 'grow', textContent: n.text }), removeButton('Forget', () => op('noteRemove', { id: n.id })))));
+    if (!w.notes.length) noteList.append(el('li', { className: 'muted', textContent: 'Nothing yet. Ask it to remember something, in the WebUI or the game chat.' }));
 
     const journal = el('ul', { className: 'dash-list journal' });
     for (const j of [...w.journal].reverse().slice(0, 15)) {

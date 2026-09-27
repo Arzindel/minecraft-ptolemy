@@ -372,8 +372,9 @@ rolling timer.
 | **Always on** | Pauses while a request runs, then counts down again |
 
 A request always interrupts a wander in progress. Wondering waits while Minecraft is disconnected or
-the world has no agent. The interval, the step limit per wander (6) and the prompt itself are under
-**Configuration → Automatic**.
+the world has no agent. The interval, the step limit per wander (6) and the prompt itself are in the
+**Chat & wondering** card on the Robot tab. The robot can also switch wondering itself when asked in
+chat ("go do your own thing", "stop wandering around").
 
 ### The tools
 
@@ -398,7 +399,10 @@ report what really happened, because the game says "success" even when the robot
 | `add_area`, `remove_area` | Name a box ("house", "kitchen"), or forget one |
 | `todo_write` | Replace the todo list, with each item pending / in progress / done |
 | `add_thought`, `drop_thought` | What's on the robot's mind |
-| `remember`, `forget` | Notes: facts worth keeping |
+| `remember`, `forget` | Long-term memory: save an entry, update one (`replace` with its number or text), or drop one |
+| `set_name` | Rename itself: the chat wake word and the name its messages are signed with (optionally the ignore word too) |
+| `set_wondering` | Switch wondering off / on / always, optionally with the idle seconds |
+| `set_world_instructions` | Add a standing rule for this world, or replace them all |
 | `wait` | Wait up to 60 seconds |
 | `run_command` | Any Minecraft command, with the game's raw reply: the escape hatch for everything else |
 
@@ -410,7 +414,17 @@ A chat message that mentions **Ptolemy** (anywhere, any case) is a request: `Pto
 `can ptolemy build a tower?`. A message that contains **Ptoless** is never a request, even if it also
 says Ptolemy, so you can talk about the robot without calling it. `Ptolemy, stop` stops it. Requests
 that arrive while it's busy wait their turn. The robot's own chat lines never trigger it. Both words,
-and whether it listens and answers at all, are under **Configuration → Automatic**.
+and whether it listens and answers at all, are in the **Chat & wondering** card on the Robot tab.
+
+**It can be renamed from the chat:** "Ptolemy, your name is now Boris" makes it call `set_name`. From
+then on "Boris" calls it, and its chat messages are signed `<Boris>`. The ignore word can be changed
+the same way.
+
+The WebUI is the admin panel, but players don't need it. From the game chat they can:
+- rename the robot
+- switch wondering
+- give it standing rules for the world
+- have it remember things
 
 ## World Memory
 
@@ -436,21 +450,24 @@ What it remembers:
 | **Areas** | Named boxes: "house", "kitchen", "farm". An area inside another is part of it ("kitchen in house"). The robot's and player's areas are shown everywhere, `go_to` can target an area, and the Nanny Cam outlines them | The LLM (`add_area`), the Dashboard, `#area` / `#boundary` |
 | **Todo list** | The robot's plan for multi-step work, like a coding agent's todo list: pending, in progress, done | The LLM (`todo_write`), the Dashboard |
 | **On its mind** | A few passing thoughts ("I want to see flowers") it may act on later, especially while wondering. Only the latest 10 are kept | The LLM (`add_thought`), the Dashboard |
-| **Notes** | Facts worth keeping ("the wood chest is at 10 64 5") | The LLM (`remember`), the Dashboard |
+| **Long-term memory** | Numbered entries to keep for good: facts, preferences, promises ("Arzindel likes birch"). The LLM saves them when asked to remember something or when it learns something worth keeping, and can update or drop them | The LLM (`remember`, `forget`), the Dashboard |
 | **Recent activity** | What it was asked lately and how it went | Automatic |
-| **Instructions for this world** | Added to the prompt in this world only | The Dashboard |
+| **Instructions for this world** | Standing rules added to the prompt in this world only | The Dashboard, the LLM (`set_world_instructions`) |
 
 The LLM sees all of it in its system prompt, and MCP clients can read it with `get_memory`.
 
 ## The Robot tab
 
-The WebUI has two tabs: **Robot** and **Configuration**. The Robot tab puts everything on one screen:
+The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Robot tab puts everything on one screen:
 
-- **Top half: the dashboard**, scrollable.
+- **Top half: the dashboard**, scrollable. Each card keeps its own height, and long lists scroll inside
+  the card.
   - The world: its name (click to rename), how it was recognised, other known worlds, and the agent.
   - Right now: where the robot and the player are and in which areas, what the robot is doing, the
     wondering countdown, and the active LLM endpoint with its test dots.
   - Connection details.
+  - Chat & wondering settings: wake word, ignore word, chat replies, and the wondering interval,
+    step limit and prompt.
   - The robot's memory: the todo list (click a mark to go pending → in progress → done), what's on
     its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent
     activity, and this world's instructions.
@@ -458,6 +475,23 @@ The WebUI has two tabs: **Robot** and **Configuration**. The Robot tab puts ever
 - **Bottom half: Automatic, the Manual console and the Nanny Cam,** side by side.
 
 On narrow windows everything stacks and the page scrolls.
+
+## The Commands tab
+
+A reference of everything that can be run, with every description editable. The edits change what's
+used:
+
+- **LLM tools:** the robot's tools with their parameters. The description is exactly what the model
+  (and MCP clients) read when deciding whether and how to use a tool, so editing it changes the robot's
+  behaviour. For example, "Pathfinding for long trips only. Prefer move for anything within 3 blocks."
+- **# console commands:** Ptolemy's own commands, with usage. The description is what `#help` prints.
+- **/ Minecraft commands:** game commands the robot works with. Ticking **In LLM prompt** lists that
+  command, with its description, in the system prompt as something the model may run through
+  `run_command`. By default that's `agent dropall`, `agent till`, `agent transfer` and `agent create`,
+  which have no dedicated tool.
+
+Edited entries are marked, **Default** puts one back, and **Reset all edits** puts back everything.
+Edits are saved in `data/commands.json`. There's a filter box at the top.
 
 ## MCP server
 
@@ -481,12 +515,11 @@ turned off under **Tools and MCP**.
 
 ## Configuration
 
-The **Configuration** tab has four sub-tabs:
+The **Configuration** tab has three sub-tabs. The chat and wondering settings, which change more
+often, are in the **Chat & wondering** card on the Robot tab instead.
 
 - **LLM**: the endpoints, and how the model is used (temperature, token and step limits, the
   conversation budget, extra instructions for every world).
-- **Automatic**: the chat wake word, ignore word and replies, and wondering (interval, step limit,
-  and the wondering prompt itself).
 - **Robot & paths**: walking path costs, scanning and path planning. These are marked **this world**:
   each world keeps its own copy. A world seen for the first time starts from the defaults for new
   worlds, and **Use these as defaults for new worlds** makes the current world's values the new defaults.
@@ -565,6 +598,7 @@ src/
   web/server.js          static file server, WebUI socket, console commands
   web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
   settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
+  commands.js            the Commands tab: tool, # and / command descriptions, and edits to them
   agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator),
                          and frame.js: the robot-relative coordinates the model sees
   world/manager.js       which world is open (the scoreboard marker), per-world folders
@@ -580,7 +614,7 @@ src/
   mcp/stdio.js           MCP over stdio, relaying to /mcp (npm run mcp)
 public/
   index.html, style.css, app.js   the WebUI
-  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js   the tabs
+  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js   the tabs and panels
   blocks.js              block colours / solidity
 abandoned-minimap-project/        old prototype, kept for reference only
 ```

@@ -37,6 +37,7 @@
   <main class="layout">
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-tab="robot" aria-selected="true">Robot</button>
+      <button class="tab" role="tab" data-tab="commands" aria-selected="false">Commands</button>
       <button class="tab" role="tab" data-tab="config" aria-selected="false">Configuration</button>
     </nav>
 
@@ -53,6 +54,12 @@
         <dt>Connected for</dt><dd id="info-uptime">–</dd>
         <dt>In flight</dt><dd id="info-pending">0</dd>
       </dl>
+            </div>
+          </section>
+          <section class="card card-settings" id="dash-settings-card">
+            <header class="card-head"><h3>Chat &amp; wondering</h3></header>
+            <div class="card-body">
+              <form class="config-form dash-settings" id="robot-settings" onsubmit="return false"></form>
             </div>
           </section>
           <section class="card card-inspect" id="dash-inspect-card">
@@ -121,12 +128,24 @@
           </div>
           <div class="cam-view">
             <canvas id="cam-canvas"></canvas>
-            <div class="cam-empty" id="cam-empty">Nothing in sight yet. Press <strong>Scan</strong> (or run <code>#scan</code>).</div>
+            <div class="cam-empty" id="cam-empty"><span>Nothing in sight yet. Press <strong>Scan</strong> (or run <code>#scan</code>).</span></div>
             <div class="cam-tooltip" id="cam-tooltip" hidden></div>
           </div>
           <p class="hint"><span id="cam-info">No sight yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>
         </div>
       
+      </div>
+    </div>
+
+    <div class="tab-panel" data-panel="commands" hidden>
+      <div class="config commands">
+        <div class="console-toolbar">
+          <span class="console-title">Commands</span>
+          <input type="search" id="commands-filter" placeholder="Filter..." spellcheck="false">
+          <span class="muted small commands-note">Edit any description: tool descriptions are exactly what the LLM reads, # descriptions are what #help shows, and / commands ticked "In LLM prompt" are offered to the LLM for run_command.</span>
+          <button class="btn btn-ghost btn-small" id="commands-reset" type="button">Reset all edits</button>
+        </div>
+        <div class="config-body" id="commands-body"></div>
       </div>
     </div>
 
@@ -154,5 +173,6 @@
   <script src="automatic.js"></script>
   <script src="endpoints.js"></script>
   <script src="dashboard.js"></script>
+  <script src="commands.js"></script>
 </body>
 </html>

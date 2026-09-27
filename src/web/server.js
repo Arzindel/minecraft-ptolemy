@@ -346,22 +346,8 @@ class WebServer {
         return;
       case 'help':
       case '':
-        say('Console commands: #subscribe <Event...>, #unsubscribe <Event...>, #subscriptions, '
-          + '#probe [all] (run every read-only agent command and summarize what each returns), '
-          + '#scan [radius] (identify the blocks around the agent; radius 2 scans a 5x5x5 cube; '
-          + 'without a radius, the configured default), '
-          + '#inflight <n> (how many commands may be outstanding at once), '
-          + '#pathfind <x y z | @p> [near|exact] (plan a route that stays next to blocks; ~ = relative to the agent; near = stop '
-          + 'somewhere around the target, on the ground if possible; @p is near unless you say exact; @p <name> for another player), '
-          + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=7] [retries=3] (plan and walk, '
-          + 'rescanning on the way), #flypathfind / #flypathwalk / #flypathfindwalk (the same, flying straight), '
-          + '#pathsafe on|off, #pathstop, '
-          + '#cmdversion <1 | 1.21.0 | off> (command syntax version sent with commands), '
-          + '#raw <json> (send a hand-written WebSocket message), '
-          + '#ask <request> (give the LLM a request), #wonder off|on|always, '
-          + '#world [new name], #area list | add <name> x1 y1 z1 x2 y2 z2 | remove <name>, '
-          + '#boundary <name> x1 x2 y1 y2 z1 z2, #help. '
-          + 'Anything not starting with # is sent to Minecraft.');
+        // Descriptions come from the Commands tab, where they can be edited.
+        say(`Console commands (anything not starting with # goes to Minecraft):\n${this.brain.commands.helpLines().join('\n')}`);
         return;
       default:
         say(`Unknown console command "#${name}". Try #help.`);

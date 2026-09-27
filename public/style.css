@@ -329,8 +329,11 @@ code, pre, input { font-family: var(--mono); }
 .cam-empty {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
   color: var(--muted);
   pointer-events: none;
 }
@@ -763,3 +766,61 @@ code, pre, input { font-family: var(--mono); }
   .robot-bottom > .pilot, .robot-bottom > .console, .robot-bottom > .cam { height: 480px; }
   .robot-top .dashboard-grid { overflow: visible; }
 }
+
+/* Dashboard cards keep their own height: long lists scroll inside the card instead of stretching the row. */
+.dashboard-grid { align-items: start; }
+.dashboard-grid .card { max-height: 340px; }
+.dashboard-grid .card-body { overflow-y: auto; min-height: 0; }
+.dashboard-grid .card-inspect .inspect { max-height: none; }
+
+/* Chat & wondering settings in a dashboard card: label and input only. */
+.dash-settings { padding: 0; overflow: visible; }
+.dash-settings .config-group { margin-top: 4px; }
+.dash-settings .config-group + .config-group { margin-top: 14px; }
+.dash-settings .config-row { grid-template-columns: minmax(0, 1fr) 120px; }
+.dash-settings .config-row .config-default { display: none; }
+.dash-settings .config-row-wide { grid-template-columns: 1fr; }
+.dash-settings .config-row-wide textarea { min-height: 90px; }
+.dash-settings .config-row-wide .btn { justify-self: start; }
+
+/* --- Commands tab ------------------------------------------------------------------ */
+
+.commands .console-toolbar input[type="search"] {
+  font: 13px var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  width: 200px;
+}
+.commands .commands-note { flex: 1; min-width: 240px; }
+#commands-body { padding: 4px 16px 16px; }
+.cmd-section h3 { margin: 16px 0 2px; font-size: 14px; }
+.cmd-section > p { margin: 0 0 8px; max-width: 90ch; }
+.cmd-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.cmd-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cmd-name { font-weight: 600; color: var(--text); }
+.cmd-usage { color: var(--muted); font-size: 12px; word-break: break-word; }
+.cmd-row textarea {
+  font: 13px/1.4 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  width: 100%;
+}
+.cmd-row textarea:focus { outline: none; border-color: var(--accent); }
+.cmd-row.edited textarea { border-color: var(--warn); }
+.cmd-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 120px; }
+.chip-edited { color: var(--warn); border-color: var(--warn); }
+@media (max-width: 900px) { .cmd-row { grid-template-columns: 1fr; } }

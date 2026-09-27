@@ -168,17 +168,38 @@ class WorldMemory extends EventEmitter {
     this._changed();
   }
 
-  /** Remove a thought or note by id, number (1-based) or matching text. */
-  remove(list, which) {
+  /** Index of a thought or note by id, number (1-based) or matching text, or -1. */
+  _find(list, which) {
     const items = this.data[list];
     const key = String(which ?? '').trim().toLowerCase();
+    if (!key) return -1;
     let index = items.findIndex((i) => i.id === key);
     if (index === -1 && /^\d+$/.test(key)) index = Number(key) - 1;
-    if (index === -1 || !items[index]) index = items.findIndex((i) => i.text.toLowerCase().includes(key) && key);
-    if (index === -1 || !items[index]) return null;
-    const [removed] = items.splice(index, 1);
+    if (index === -1 || !items[index]) index = items.findIndex((i) => i.text.toLowerCase().includes(key));
+    return items[index] ? index : -1;
+  }
+
+  /** Remove a thought or note by id, number (1-based) or matching text. */
+  remove(list, which) {
+    const index = this._find(list, which);
+    if (index === -1) return null;
+    const [removed] = this.data[list].splice(index, 1);
     this._changed();
     return removed;
+  }
+
+  /** Rewrite a note (by id, number or matching text). Returns the old text, or null if not found. */
+  updateNote(which, text) {
+    const clean = String(text || '').trim().slice(0, 300);
+    if (!clean) throw new Error('a note needs text');
+    const index = this._find('notes', which);
+    if (index === -1) return null;
+    const note = this.data.notes[index];
+    const old = note.text;
+    note.text = clean;
+    note.time = Date.now();
+    this._changed();
+    return old;
   }
 
   addJournal(entry) {
@@ -232,7 +253,9 @@ class WorldMemory extends EventEmitter {
     lines.push(d.thoughts.length
       ? `On your mind:\n${d.thoughts.map((t) => `- ${t.text} (${ago(t.time)})`).join('\n')}`
       : 'On your mind: nothing in particular.');
-    if (d.notes.length) lines.push(`Notes:\n${d.notes.map((n) => `- ${n.text}`).join('\n')}`);
+    lines.push(d.notes.length
+      ? `Long-term memory (numbered; remember with replace to change one, forget to drop one):\n${d.notes.map((n, i) => `${i + 1}. ${n.text}`).join('\n')}`
+      : 'Long-term memory: empty. Save lasting facts and wishes with remember.');
     const recent = d.journal.slice(-5);
     if (recent.length) {
       lines.push(`Recently:\n${recent.map((j) => `- ${ago(j.time)}: ${j.request ? `"${j.request.slice(0, 80)}" → ` : ''}${(j.result || '').slice(0, 120)}`).join('\n')}`);

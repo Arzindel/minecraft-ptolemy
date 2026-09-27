@@ -13,6 +13,7 @@
   const stopBtn = $('pilot-stop');
   const resetBtn = $('pilot-reset');
   const items = new Map(); // entry id -> li
+  let robotName = 'Ptolemy'; // chat.name: the robot can be renamed
 
   $('pilot-mcp-url').textContent = `${location.origin}/mcp`;
 
@@ -66,8 +67,8 @@
       who.className = 'pilot-who';
       who.textContent = entry.kind === 'user'
         ? (entry.source === 'chat' ? `${entry.sender || 'Player'} (chat)` : entry.source === 'wonder' ? 'Wondering' : 'You')
-        : entry.kind === 'assistant' ? (entry.source === 'chat' ? 'Ptolemy → chat' : 'Ptolemy')
-          : entry.kind === 'notice' ? 'Ptolemy says' : entry.kind === 'error' ? 'Error' : '';
+        : entry.kind === 'assistant' ? (entry.source === 'chat' ? `${robotName} → chat` : robotName)
+          : entry.kind === 'notice' ? `${robotName} says` : entry.kind === 'error' ? 'Error' : '';
       who.title = time;
       const text = document.createElement('span');
       text.className = 'pilot-text';
@@ -113,6 +114,11 @@
   document.addEventListener('ptolemy:settings', (ev) => {
     const name = ev.detail.values['chat.name'] || 'ptolemy';
     $('pilot-chat-hint').textContent = `${name}, come here`;
+    if (name !== robotName) {
+      robotName = name;
+      // Re-label what's already in the transcript.
+      for (const li of items.values()) li.querySelectorAll('.pilot-who').forEach((w) => { w.textContent = w.textContent.replace(/^\S+( → chat| says)?$/, (m, rest) => (/^(You|Error|Wondering)$|\(chat\)/.test(m) ? m : `${robotName}${rest || ''}`)); });
+    }
   });
 
   form.addEventListener('submit', (ev) => {
