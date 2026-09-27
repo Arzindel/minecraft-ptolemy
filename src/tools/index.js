@@ -4,6 +4,7 @@ const { FORWARD, turnLeft, turnRight, getAgentPose } = require('../agent/pose');
 const { isSolid } = require('../../public/blocks');
 const { Frame } = require('../agent/frame');
 const players = require('../agent/players');
+const entities = require('../agent/entities');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
 // game commands and report what actually happened, since the game's own replies say "success"
@@ -15,6 +16,7 @@ const MAX_MOVE = 64;
 const MAX_BLOCKS_QUERY = 64;
 const MAX_WAIT_S = 60;
 const MAX_SCAN_RADIUS = 15;
+const LIST_ENTITIES = 30;
 // Blocks that are everywhere: counted in scan summaries, but not listed one by one.
 const LIST_LIMIT_PER_TYPE = 5;
 const COMMON_THRESHOLD = 20;
@@ -83,6 +85,7 @@ const POSITION = {
  * @param {import('../agent/navigator').Navigator} deps.navigator
  * @param {import('../settings').Settings} deps.settings
  * @param {(radius: number, opts?: object) => Promise<object|null>} deps.scan
+ * @param {(radius: number, opts?: object) => Promise<{pose, entities}|null>} deps.lookForEntities   also shows them in the Nanny Cam
  * @param {(text: string, extra?: object) => void} deps.log
  * @param {() => object|null} deps.sight   the latest Sight (for status)
  * @param {import('../world/manager').WorldManager} deps.worlds   world detection and memory
@@ -90,7 +93,7 @@ const POSITION = {
  * @param {() => void} [deps.activity]   called after every tool call (resets the wondering countdown)
  * @param {(mode: string) => void} [deps.setWonder]   switch wondering off / on / always
  */
-function createToolbox({ bridge, world, navigator, settings, scan, log, sight, worlds, notify, activity, setWonder }) {
+function createToolbox({ bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder }) {
   const memory = () => {
     if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
     return worlds.current;
@@ -210,6 +213,32 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     return { direction: dir, note: `Walked next to it first (${countMoved(pose, after)} blocks). ${afterMove(afterFrame)} ` };
   }
 
+  /** A look for entities, told the way a model can use it. */
+  async function entitiesText(radius) {
+    const look = await lookForEntities(radius, { quiet: true });
+    if (!look) throw new Error('looking for entities failed (see the console)');
+    const found = look.entities;
+    if (!found.length) return `Entities: none (no mobs, animals, players or items) within ${radius} blocks of the robot.`;
+    const frame = await frameNow(look.pose);
+    const lines = [`Entities within ${radius} blocks of the robot, nearest first (a snapshot: they move): ${entities.countsText(found)}.`];
+    for (const e of found.slice(0, LIST_ENTITIES)) {
+      const tags = [
+        e.type && !['item', 'player'].includes(e.type) && entities.typeGuess(e.name) !== e.type && `a ${e.type.replace(/_/g, ' ')}`,
+        e.hostile && 'hostile',
+        e.player && 'player, height may be their head',
+        e.item && 'dropped item: collect picks it up from nearby',
+      ].filter(Boolean).join(', ');
+      const where = areaOf(e);
+      lines.push(`- ${e.name}${tags ? ` (${tags})` : ''}: ${frame.fmt(e.x, e.y, e.z)}, ${e.distance.toFixed(1)} blocks away`
+        + `${where ? `, in ${where}` : ''}`);
+    }
+    if (found.length > LIST_ENTITIES) lines.push(`(+${found.length - LIST_ENTITIES} more, further away)`);
+    if (found.some((e) => e.name === 'Unidentified entity')) {
+      lines.push('Unidentified entities are there, but the game didn\'t say what they are.');
+    }
+    return lines.join('\n');
+  }
+
   // --- Looking around ---------------------------------------------------------
 
   add({
@@ -250,21 +279,32 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'scan',
-    description: 'Look at every block in a cube around the robot (radius 3 = 7x7x7, about 0.3s; radius 8 = 17x17x17, about 5s; '
-      + 'a bigger scan means a longer result, so start small). '
-      + 'Returns what is next to the robot, the ground below it, counts of each block type, and the coordinates of the rarer blocks. '
-      + 'Also updates the robot\'s map for go_to.',
+    description: 'Look around the robot. what "blocks": every block in a cube around it (radius 3 = 7x7x7, about 0.3s; '
+      + 'radius 8 = 17x17x17, about 5s; a bigger scan means a longer result, so start small): what is next to the robot, '
+      + 'the ground below it, counts of each block type, and the coordinates of the rarer blocks; it also updates the '
+      + 'robot\'s map for go_to. what "entities": mobs, animals, players and dropped items (fast, up to '
+      + `${entities.MAX_RADIUS} blocks away): what each one is, where, how far, and which are hostile. They move, so call it `
+      + 'again before acting on one; to attack one, pass its position to attack. what "both" (the default): the two at once.',
     parameters: {
       type: 'object',
       properties: {
-        radius: { type: 'integer', minimum: 1, maximum: MAX_SCAN_RADIUS, description: 'Blocks in each direction (default: the configured scan radius).' },
+        what: { type: 'string', enum: entities.WHAT, description: 'What to look for (default "both").' },
+        radius: {
+          type: 'integer', minimum: 1, maximum: entities.MAX_RADIUS,
+          description: `Blocks in each direction. Blocks: up to ${MAX_SCAN_RADIUS} (default: the configured scan radius). `
+            + `Entities: always at least ${entities.DEFAULT_RADIUS} unless what is "entities" alone.`,
+        },
       },
     },
-    async run({ radius }) {
+    async run({ what, radius }) {
+      const mode = entities.WHAT.includes(what) ? what : 'both';
       const r = clampInt(radius ?? settings.get('scan.radius'), 1, MAX_SCAN_RADIUS);
-      const result = await scan(r, { quiet: true });
-      if (!result) throw new Error('the scan failed (see the console)');
-      return summarizeScan(result, settings.get('llm.coordinates'));
+      const [blocks, seen] = await Promise.all([
+        mode !== 'entities' && scan(r, { quiet: true }),
+        mode !== 'blocks' && entitiesText(entities.entityRadius(mode === 'entities' ? radius : radius ?? r, mode)),
+      ]);
+      if (mode !== 'entities' && !blocks) throw new Error('the scan failed (see the console)');
+      return [blocks && summarizeScan(blocks, settings.get('llm.coordinates')), seen].filter(Boolean).join('\n');
     },
   });
 
@@ -495,7 +535,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   add({
     name: 'attack',
     description: 'Attack whatever mob or player is in the cell beside the robot in a direction (or at a position: the robot '
-      + 'walks beside it first).',
+      + 'walks beside it first). scan with what "entities" says where mobs are.',
     destructive: true,
     parameters: { type: 'object', properties: { direction: dirParam('Which way to attack.'), ...POSITION_PROPS } },
     async run(args) {

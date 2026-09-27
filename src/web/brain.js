@@ -22,7 +22,7 @@ const POSITION_POLL_MS = 4000;
  */
 class Brain {
   /**
-   * @param {object} deps  bridge, settings, navigator, world (WorldKnowledge), scan, sight(), log, broadcast
+   * @param {object} deps  bridge, settings, navigator, world (WorldKnowledge), scan, lookForEntities, sight(), log, broadcast
    */
   constructor(deps) {
     Object.assign(this, deps);
@@ -37,6 +37,7 @@ class Brain {
       navigator: deps.navigator,
       settings,
       scan: deps.scan,
+      lookForEntities: deps.lookForEntities,
       log: (text) => this.log(text),
       sight: deps.sight,
       worlds: this.worlds,

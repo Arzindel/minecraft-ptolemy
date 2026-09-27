@@ -17,6 +17,23 @@ const FLIGHT_WORDS = /\b(fly|flies|flying|flew|flight|teleport\w*|tp)\b/i; // ho
 const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'get_memory', 'todo_write']);
 
 /**
+ * What a tool result is a snapshot of. A scan can hold blocks, entities or both, and is only left
+ * out once newer results cover everything it holds.
+ */
+function snapshotKinds(name, args) {
+  if (name === 'scan') {
+    const what = args && args.what;
+    return what === 'blocks' ? ['blocks'] : what === 'entities' ? ['entities'] : ['blocks', 'entities'];
+  }
+  return SNAPSHOT_TOOLS.has(name) ? [name] : [];
+}
+
+/** A stored result's snapshot kinds (results from before `snapshot` was stored count by tool name). */
+function kindsOf(result) {
+  return result.snapshot || snapshotKinds(result.name, null);
+}
+
+/**
  * Automatic mode: takes requests (from the WebUI, the in-game chat, or the wondering timer) and
  * runs the model in a loop, executing its tool calls, until it answers without calling a tool.
  *
@@ -218,7 +235,7 @@ class Pilot extends EventEmitter {
         const results = [];
         for (const call of calls) {
           if (signal.aborted) {
-            results.push({ id: call.id, name: call.name, text: 'Not run: the request was stopped.' });
+            results.push({ id: call.id, name: call.name, text: 'Not run: the request was stopped.', snapshot: [] });
             continue;
           }
           const entry = this._entry({ kind: 'tool', name: call.name, args: call.args, pending: true });
@@ -230,7 +247,7 @@ class Pilot extends EventEmitter {
           const limit = this.settings.get('llm.toolResultChars');
           const resultText = res.text.length > limit ? `${res.text.slice(0, limit)}\n... (cut to ${limit} characters)` : res.text;
           this._update(entry, { pending: false, ok: res.ok, result: resultText });
-          results.push({ id: call.id, name: call.name, text: resultText });
+          results.push({ id: call.id, name: call.name, text: resultText, snapshot: snapshotKinds(call.name, call.args) });
         }
         turn.push({ role: 'results', results });
       }
@@ -392,7 +409,7 @@ class Pilot extends EventEmitter {
     // Snapshots (scans, status, memory, the todo list) go stale: only the newest of each kind is sent.
     const newest = new Map();
     for (const turn of turns) {
-      for (const m of turn) if (m.role === 'results') for (const r of m.results) if (SNAPSHOT_TOOLS.has(r.name)) newest.set(r.name, r);
+      for (const m of turn) if (m.role === 'results') for (const r of m.results) for (const kind of kindsOf(r)) newest.set(kind, r);
     }
     const lastMessage = turns.length ? turns[turns.length - 1][turns[turns.length - 1].length - 1] : null;
 
@@ -402,7 +419,7 @@ class Pilot extends EventEmitter {
       // so the request in progress is sent exactly as it was (old [Now] blocks and snapshots included).
       const frozen = anthropic && latest;
       const withContext = (m, content) => (m.context && (m === lastMessage || frozen) ? `${content}\n\n${m.context}` : content);
-      const resultText = (r) => (SNAPSHOT_TOOLS.has(r.name) && newest.get(r.name) !== r && !frozen
+      const resultText = (r) => (kindsOf(r).length && kindsOf(r).every((kind) => newest.get(kind) !== r) && !frozen
         ? `(Older ${r.name} result left out: a newer one follows.)` : r.text);
       for (const m of turn) {
         if (m.role === 'user') {
