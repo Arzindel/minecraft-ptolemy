@@ -15,12 +15,43 @@ const MAX_MOVE = 64;
 const MAX_BLOCKS_QUERY = 64;
 const MAX_WAIT_S = 60;
 const MAX_SCAN_RADIUS = 15;
+// After destroy/place, how long to keep checking whether the block changed.
+const ACT_POLLS = 6;
+const ACT_POLL_MS = 150;
 // Blocks that are everywhere: counted in scan summaries, but not listed one by one.
 const LIST_LIMIT_PER_TYPE = 5;
 const COMMON_THRESHOLD = 20;
 
-const NO_FLIGHT = 'Not allowed: flying and teleporting need the player\'s explicit permission in this request, and they didn\'t '
-  + 'ask for it. Walk instead (go_to without fly, or move); if you can\'t get there on foot, say so.';
+// Flying and teleporting are two different things, each allowed only when the request asks for it:
+// flying is go_to with fly (the robot moves block by block through the air), teleporting is an
+// instant jump (teleport_to_player, agent tp). Permission for one is never permission for the other.
+const NO_FLY = 'Not allowed: flying needs the player\'s explicit permission in this request, and they didn\'t ask for it. '
+  + 'Walk instead (go_to without fly, or move); if you can\'t get there on foot, say so.';
+const NO_TELEPORT = 'Not allowed: teleporting needs the player\'s explicit permission in this request, and they didn\'t ask '
+  + 'for it. Being allowed to fly is NOT permission to teleport. Walk (or fly, if that was allowed) and say so if you can\'t '
+  + 'get there.';
+
+// Commands that do something to players: move them, hurt or kill them, change their effects, game
+// mode, abilities, inventory or experience. Ptolemy drives its robot; it is not a cheat tool, so
+// these are refused whoever asks (the model or an MCP client), whatever the settings. Commands run
+// as the connected player, so "tp @s" moves that player, not the robot. `agent ...` commands (the
+// robot's own, e.g. agent tp) are fine.
+const PLAYER_COMMANDS = new Set(['tp', 'teleport', 'spreadplayers', 'ride', 'kill', 'damage', 'effect', 'gamemode',
+  'ability', 'clear', 'give', 'replaceitem', 'xp', 'enchant', 'spawnpoint', 'clearspawnpoint', 'camera', 'inputpermission']);
+const NO_PLAYER_COMMAND = (cmd) => `Refused: "${cmd}" acts on players, and you may never move, hurt or change a player (their `
+  + 'position, health, effects, game mode or inventory), even if asked. Commands run as the player, so @s and @p are the '
+  + 'player, never you. To move yourself, use your own tools (move, go_to, or teleport_to_player / "agent tp x y z" when '
+  + 'teleporting was asked for).';
+
+/** The first player-affecting command in a command line (including after "run" in an execute chain), or null. */
+function playerCommandIn(line) {
+  const heads = [line, ...line.split(/\brun\s+/i).slice(1)];
+  for (const head of heads) {
+    const word = head.trim().replace(/^\/+/, '').split(/\s+/)[0].toLowerCase().replace(/^minecraft:/, '');
+    if (PLAYER_COMMANDS.has(word)) return word;
+  }
+  return null;
+}
 
 const sleep = (ms, signal) => new Promise((resolve) => {
   const timer = setTimeout(resolve, ms);
@@ -152,7 +183,12 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     const [x, y, z] = [pose.x + dx, pose.y + dy, pose.z + dz];
     const before = await blockAt(x, y, z);
     const res = await bridge.sendCommand(`agent ${verb} ${extra}${direction}`.replace(/\s+/g, ' '));
-    const after = await blockAt(x, y, z);
+    // The agent's arm swing takes a moment: the block often still reads as before right after the reply.
+    let after = await blockAt(x, y, z);
+    for (let i = 0; res.ok && after === before && i < ACT_POLLS; i++) {
+      await sleep(ACT_POLL_MS);
+      after = await blockAt(x, y, z);
+    }
     world.setBlock(x, y, z, after);
     const frame = await frameNow(pose);
     const where = `${direction} of the robot (${Frame.world(x, y, z)})`;
@@ -339,7 +375,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       if (!result.step) return `Couldn't move: ${result.reason}.`;
       const blocker = await blockAt(...result.step.enters);
       if (isSolid(blocker)) world.markBlocked(...result.step.enters);
-      return `Moved ${moved} of ${n} blocks ${direction}, then was blocked by ${blocker} (now at ${frame.fmt(...result.step.enters)}, `
+      return `Moved ${moved} of ${n} blocks ${direction}, then was blocked by ${blocker} (the block at ${frame.fmt(...result.step.enters)}, `
         + `directly ${direction} of you: "destroy ${direction}" would break it). ${afterMove(frame)}${await playerLine(frame)}`;
     },
   });
@@ -392,7 +428,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         precision: { type: 'string', enum: ['near', 'exact'], description: '"near": stop somewhere around the target (beside, diagonal or 2 '
           + 'blocks away, preferably standing on ground). "exact": end exactly on it. Default: near for the player and areas, '
           + 'exact for positions. "Come here" / "come to me" means near; "stand where I am" means exact.' },
-        fly: { type: 'boolean', description: 'ONLY if the player explicitly asked you to fly in this request: take the straightest route through the air. Otherwise leave it out.' },
+        fly: { type: 'boolean', description: 'ONLY if the player explicitly asked you to fly in this request: take the '
+          + 'straightest route through the air, still moving block by block (this is flying, NOT teleporting). Otherwise leave it out.' },
       },
     },
     async run(params) {
@@ -427,15 +464,29 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly), near: nearDefault }));
       const frame = await frameNow();
       // The pathfinder talks in world coordinates: put them in the model's frame, as seen from where the robot ended up.
-      return `${lines.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;
+      // One line per rescan on the way is noise for the model: count them instead.
+      const rescans = lines.filter((l) => l.startsWith('Entering unknown territory')).length;
+      const told = lines.filter((l) => !l.startsWith('Entering unknown territory'));
+      if (rescans) told.splice(1, 0, `Looked around ${rescans} time(s) on the way, walking into unseen ground.`);
+      let text = `${told.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;
+      if (lines.some((l) => l.includes('boxed in'))) {
+        const around = await Promise.all(DIRECTIONS.map(async (d) => {
+          const [dx, dy, dz] = offsetOf(d, frame.pose.facing);
+          return `${d}: ${await blockAt(frame.pose.x + dx, frame.pose.y + dy, frame.pose.z + dz)}`;
+        }));
+        text += `\nTouching the robot: ${around.join(', ')}. Breaking one of these (destroy with that direction) is the only way `
+          + 'out on foot; ask first unless the request allows breaking blocks.';
+      }
+      return text;
     },
   });
 
   add({
     name: 'teleport_to_player',
-    description: 'Instantly teleport the robot to a player (agent tp). ONLY when the player explicitly asked for a teleport in '
-      + 'this request. Otherwise walk with go_to, and say so if you can\'t get there.',
-    flight: true,
+    description: 'Instantly teleport the robot to a player (agent tp). ONLY when the player explicitly asked you to teleport in '
+      + 'this request: permission to fly is not permission to teleport. Otherwise walk (or fly with go_to if that was '
+      + 'allowed), and say so if you can\'t get there. It only ever moves the robot, never a player.',
+    teleport: true,
     parameters: { type: 'object', properties: { player: { type: 'string', description: 'Which player, by name. Default: the player who asked you.' } } },
     async run({ player: wanted }) {
       const name = await whichPlayer(wanted);
@@ -787,15 +838,22 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'run_command',
-    description: 'Run any Minecraft Bedrock command (without the slash) as the player and get the game\'s raw reply, '
-      + 'e.g. "agent till forward", "time set day", "give @s torch 16". Use the other tools when they fit.',
+    description: 'Run a Minecraft Bedrock command (without the slash) and get the game\'s raw reply, e.g. "agent till forward", '
+      + '"time set day". It runs AS THE PLAYER: @s and @p mean the player, never you (the robot\'s own commands start with '
+      + '"agent"). Commands that act on players (tp, teleport, kill, effect, gamemode, give, clear...) are always refused. '
+      + 'Use the other tools when they fit.',
     raw: true,
     parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
     async run({ command }) {
       const line = String(command || '').trim().replace(/^\/+/, '');
       if (!line) throw new Error('empty command');
       if (line.startsWith('#')) throw new Error('#console commands are for people; use the tools instead');
-      if (!allowFlight && /^(agent\s+)?(tp|teleport)\b/i.test(line)) throw new Error(NO_FLIGHT);
+      const forbidden = playerCommandIn(line);
+      if (forbidden) {
+        log(`Refused a command that acts on players: ${line}`);
+        throw new Error(NO_PLAYER_COMMAND(forbidden));
+      }
+      if (!allowed.teleport && /^agent\s+(tp|teleport)\b/i.test(line)) throw new Error(NO_TELEPORT);
       const res = await bridge.sendCommand(line);
       const { statusCode, statusMessage, ...data } = res.body || {};
       return `${res.ok ? 'OK' : `Failed (${res.statusCode})`}: ${res.statusMessage}`
@@ -818,9 +876,9 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     return lines;
   }
 
-  // Flying and teleporting only when the person explicitly asked for it (see the pilot); MCP clients
-  // are trusted with both. Set per call by call(); read by run_command.
-  let allowFlight = true;
+  // Flying and teleporting, each only when the person explicitly asked for it (see the pilot); MCP
+  // clients are trusted with both. Set per call by call(); read by run_command.
+  let allowed = { fly: true, teleport: true };
   // Who this request is for: the chat sender, or the connected player for WebUI requests. Set per call.
   let requester = null;
   let requesterAsked = false;
@@ -831,15 +889,15 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     describe = fn;
   }
 
-  /** The tools currently enabled by the settings; without `flight`, no teleporting and no flying. */
-  function list({ flight = true } = {}) {
+  /** The tools currently enabled by the settings; without `teleport` no teleport tool, without `fly` no fly option. */
+  function list({ fly = true, teleport = true } = {}) {
     return tools.filter((t) => (!t.raw || settings.get('tools.allowRaw'))
       && (!t.destructive || settings.get('tools.allowDestructive'))
-      && (flight || !t.flight))
+      && (teleport || !t.teleport))
       .map((t) => {
         const described = { ...t, description: describe(t) };
-        if (flight || !t.parameters.properties || !t.parameters.properties.fly) return described;
-        const { fly, ...props } = t.parameters.properties;
+        if (fly || !t.parameters.properties || !t.parameters.properties.fly) return described;
+        const { fly: _, ...props } = t.parameters.properties;
         return { ...described, parameters: { ...t.parameters, properties: props } };
       });
   }
@@ -848,12 +906,16 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
    * Run a tool by name. Never throws: errors come back as { ok: false, text } so the model can
    * read them and try something else.
    */
-  async function call(name, args, { signal, origin = 'LLM', flight = true, player = null } = {}) {
-    if (!flight && (tools.some((t) => t.name === name && t.flight) || (name === 'go_to' && args && args.fly))) {
-      log(`${origin} → ${name} refused: flying/teleporting wasn't asked for`);
-      return { ok: false, text: NO_FLIGHT };
+  async function call(name, args, { signal, origin = 'LLM', fly = true, teleport = true, player = null } = {}) {
+    if (!teleport && tools.some((t) => t.name === name && t.teleport)) {
+      log(`${origin} → ${name} refused: teleporting wasn't asked for`);
+      return { ok: false, text: NO_TELEPORT };
     }
-    allowFlight = flight;
+    if (!fly && name === 'go_to' && args && args.fly) {
+      log(`${origin} → go_to refused: flying wasn't asked for`);
+      return { ok: false, text: NO_FLY };
+    }
+    allowed = { fly, teleport };
     requester = player || bridge.player;
     requesterAsked = Boolean(player);
     const tool = list().find((t) => t.name === name);

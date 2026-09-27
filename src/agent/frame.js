@@ -89,6 +89,8 @@ class Frame {
       if ([x, y, z].some((v) => v === null || !Number.isFinite(v))) throw new Error('world coordinates need all three of x, y and z');
       return [x, y, z];
     }
+    // {direction: "down"} (a slip models make for "the block below"): one block that way.
+    if (REL_KEYS.includes(p.direction) && !REL_KEYS.some((k) => n(p[k]) !== null)) p = { [p.direction]: p.blocks ?? 1 };
     if (!REL_KEYS.some((k) => n(p[k]) !== null)) return null;
     const c = (k) => { const v = n(p[k]); if (v !== null && !Number.isFinite(v)) throw new Error(`${k} must be a number`); return v || 0; };
     const rel = new Frame(this.pose, 'relative');

@@ -60,13 +60,12 @@ const SLASH = [
   ['tellraw', '@a <json>', 'Send a formatted chat message; Ptolemy uses it for the robot\'s chat lines.', false],
   ['time set', '<day|night|noon|midnight|value>', 'Set the time of day.', false],
   ['weather', '<clear|rain|thunder> [duration]', 'Change the weather.', false],
-  ['give', '<player> <item> [amount]', 'Give items to a player.', false],
   ['tickingarea', 'add|remove|list ...', 'Keep chunks loaded even without a player nearby.', false],
   ['scoreboard objectives', 'add|remove|list ...', 'Scoreboards; Ptolemy keeps a ptolemy_<id> objective to recognise the world.', false],
 ];
 
 class CommandCatalog extends EventEmitter {
-  /** @param {{ tools: Array<{name, description, parameters, raw?, destructive?, flight?, offline?}> }} deps */
+  /** @param {{ tools: Array<{name, description, parameters, raw?, destructive?, teleport?, offline?}> }} deps */
   constructor({ tools }) {
     super();
     this.tools = tools;
@@ -137,7 +136,7 @@ class CommandCatalog extends EventEmitter {
         description: this.toolDescription(t.name, t.description),
         defaultDescription: t.description,
         params: paramSummary(t.parameters),
-        tags: [t.raw && 'raw', t.destructive && 'destructive', t.flight && 'only when asked to fly/teleport', t.offline && 'works offline'].filter(Boolean),
+        tags: [t.raw && 'raw', t.destructive && 'destructive', t.teleport && 'only when asked to teleport', t.offline && 'works offline'].filter(Boolean),
         edited: edited('tools', t.name),
       })),
       hash: HASH.map(([name, usage, description]) => ({

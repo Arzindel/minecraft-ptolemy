@@ -171,12 +171,19 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   `@p` ends beside you at body height. A solid target means "go next to it".
 - **Planning** is an A* search over position and facing. The robot turns to face where it's going
   (it looks better) and moves up and down without turning. A target sealed in by known solid blocks
-  is refused straight away.
-- **Unseen cells are unknown**, neither air nor wall. The terrain is assumed to carry on as last seen:
-  an unseen cell costs a ground step at the walking height of the nearest scanned column, and the
-  airborne price above or below it. Every unseen cell also costs the "unseen" penalty on top.
-  `#pathfindwalk` stops and rescans before entering one, so a cliff just past the edge of Sight is
-  found and climbed down, not flown over.
+  is refused straight away, and so is a robot boxed in by them (say, stuck inside a tree's leaves):
+  the error says it has to break a block to get out.
+- **What the robot knows** is every scan it has made in this world, a newer scan overwriting what an
+  older one said (up to 200,000 cells, the oldest forgotten first; it all resets when another world
+  opens). Keeping older scans is what lets it walk around a big wall or hill: with only the latest
+  scan, it forgot the part of the wall it had already seen and went back and forth along it.
+- **Unseen cells are unknown**, neither air nor wall. The planner assumes it can walk through them:
+  an unseen cell costs a ground step plus the "unseen" penalty, whatever its height. `#pathfindwalk`
+  stops and rescans before entering one and re-plans with what's really there, so a cliff or a hill
+  just past the edge of Sight is found and handled as soon as the robot gets near. (An older version
+  guessed the terrain carried on flat, as last seen, and priced every unseen cell off that height as
+  flying. A target a few blocks higher or lower than the ground at the edge of Sight then looked like
+  a long flight, and the search gave up before finding any route.)
 - **`#pathfind` vs `#flypathfind`:** the fly version takes the shortest route through the air (every
   move costs 1). The plain version follows the path of least resistance for something that walks,
   swims and climbs. Entering a cell costs by its best known support, and a cell in water always
@@ -202,8 +209,9 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   `agent getposition`, and the walk stops at the first mismatch. With `#pathsafe on` it polls for up
   to 2 seconds first, in case moves turn out not to be instant.
 - **`#pathfindwalk`** scans first, then walks. Before entering unknown cells it stops, rescans and
-  re-plans. Those rescans are budgeted at ⌈1.5 × distance ÷ scan radius⌉, so a robot trying to get
-  into a closed box gives up. When a step fails (someone closed the door), it marks that cell as
+  re-plans. Those rescans are budgeted at ⌈2 × distance ÷ scan radius⌉ + 3, so a robot trying to get
+  into a closed box gives up. Since everything seen is kept, running it again carries on from where it
+  stopped (useful after a very long detour). When a step fails (someone closed the door), it marks that cell as
   blocked, rescans and re-plans. That counts as a retry, and it hard-stops after `retries` failures.
 - **Stored paths:** walking and flight paths are stored separately (`#pathwalk` walks the one from
   `#pathfind`, `#flypathwalk` the one from `#flypathfind`). A stored path is only valid while the
@@ -302,13 +310,29 @@ world − robot. The other facings are that, rotated (`src/agent/frame.js`).
 - **Defaults:** near for the player ("come here") and for named areas, exact for positions.
 - **Settings:** all of these numbers are under Configuration → Robot & paths, per world.
 
-### Flying and teleporting only when asked
+### Flying and teleporting only when asked, and never confused
 
-`go_to` with `fly`, `teleport_to_player` and `tp`/`agent tp` through `run_command` are only allowed
-when the request itself asks for them, e.g. "fly over to me" or "teleport to me". Otherwise the fly
-option and the teleport tool aren't offered to the model at all, and any attempt is refused. The model
-is told to walk, and to say so if it can't get there. The `[Now]` block tells it which case applies.
-Wondering never flies or teleports. MCP clients aren't restricted.
+Flying and teleporting are different things with separate permissions:
+
+- **Flying** is `go_to` with `fly`: the robot still travels block by block, through the air instead of
+  along the ground. It's allowed only when the request says fly ("you can fly here").
+- **Teleporting** is an instant jump: `teleport_to_player`, or `agent tp` through `run_command`. It's
+  allowed only when the request says teleport or tp ("teleport to me").
+
+Permission for one is never permission for the other: "you can fly" doesn't unlock teleporting. A
+negated word doesn't count ("fly, not teleport" allows flying only), and neither does the past tense
+("you teleported me!" is a complaint, not a request). Whatever isn't allowed isn't offered to the model
+(no fly option, no teleport tool), and any attempt is refused. The `[Now]` block tells the model which
+are allowed. Wondering never flies or teleports. MCP clients aren't restricted.
+
+### Players are off limits
+
+Ptolemy drives its robot; it is not a cheat tool. `run_command` always refuses commands that act on
+players, whoever asks (the model or an MCP client) and whatever the settings: `tp`, `teleport`,
+`spreadplayers`, `ride`, `kill`, `damage`, `effect`, `gamemode`, `ability`, `clear`, `give`,
+`replaceitem`, `xp`, `enchant`, `spawnpoint`, `clearspawnpoint`, `camera` and `inputpermission`,
+including after `run` in an `execute` chain. Commands run as the connected player, so `tp @s` would move
+*you*, not the robot. The robot's own commands (`agent tp` and the rest) are unaffected.
 
 ### Endpoints
 
@@ -389,7 +413,7 @@ report what really happened, because the game says "success" even when the robot
 | `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
-| `teleport_to_player` | `agent tp`, only when the request asks for a teleport |
+| `teleport_to_player` | `agent tp`, only when the request asks for a teleport (asking to fly isn't enough) |
 | `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
 | `locate` | One position, given relative or world, in both forms, plus the block there and its area |
 | `collect`, `drop` | Pick up items nearby, or drop items from a slot |
@@ -404,7 +428,7 @@ report what really happened, because the game says "success" even when the robot
 | `set_wondering` | Switch wondering off / on / always, optionally with the idle seconds |
 | `set_world_instructions` | Add a standing rule for this world, or replace them all |
 | `wait` | Wait up to 60 seconds |
-| `run_command` | Any Minecraft command, with the game's raw reply: the escape hatch for everything else |
+| `run_command` | A Minecraft command, with the game's raw reply: the escape hatch for everything else. Never one that acts on players |
 
 `run_command` and `destroy`/`attack` can be turned off under **Tools and MCP**.
 
@@ -541,7 +565,8 @@ everything back (endpoints and keys stay).
 The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
 and no libraries:
 
-- **Scan** runs a scan of the chosen radius, same as `#scan`. Every new scan replaces Sight.
+- **Scan** runs a scan of the chosen radius, same as `#scan`. Every new scan replaces Sight here (the
+  pathfinder remembers older scans too; the Nanny Cam only draws the latest).
 - **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
   **double-click** to reset.
 - **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
@@ -639,5 +664,6 @@ abandoned-minimap-project/        old prototype, kept for reference only
   (Ptolemy then treats the world as new).
 - With wondering on, the LLM acts on its own every so often: with a paid endpoint, that costs tokens
   even while you're not looking.
-- The LLM can run any command through `run_command` unless you turn it off in the Configuration tab.
+- The LLM can run commands through `run_command` unless you turn it off in the Configuration tab.
+  Commands that act on players are always refused (see "Players are off limits").
 - The agent cannot be killed or removed. You have been warned. You were warned before that, too.

@@ -70,6 +70,7 @@ class Brain {
       const previous = this._openWorld;
       this._openWorld = memory;
       if (previous !== memory) {
+        if (previous) deps.world.clear(); // what the robot saw belongs to the old world
         settings.setWorld(memory);
         this.pilot.switchWorld(previous, memory);
       } else if (settings.world) {
