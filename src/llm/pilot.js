@@ -7,6 +7,7 @@ const { systemPrompt, contextBlock, parseTextToolCalls, parseArguments, visibleT
 const { getAgentPose } = require('../agent/pose');
 const { Frame } = require('../agent/frame');
 const { allPlayers } = require('../agent/players');
+const { mapSummary } = require('../tools');
 
 const TRANSCRIPT_LIMIT = 300;
 const QUEUE_LIMIT = 5;
@@ -54,9 +55,9 @@ function kindsOf(result) {
  *   'cleared' the conversation was reset
  */
 class Pilot extends EventEmitter {
-  constructor({ settings, endpoints, toolbox, bridge, worlds, commands }) {
+  constructor({ settings, endpoints, toolbox, bridge, worlds, commands, map = null }) {
     super();
-    Object.assign(this, { settings, endpoints, toolbox, bridge, worlds, commands });
+    Object.assign(this, { settings, endpoints, toolbox, bridge, worlds, commands, map });
     this.turns = []; // [[{ role: 'user', text } | { role: 'assistant', text, calls, raw, api } | { role: 'results', results }]]
     this.transcript = [];
     this.queue = [];
@@ -318,6 +319,9 @@ class Pilot extends EventEmitter {
         const pose = await getAgentPose(this.bridge);
         frame = new Frame(pose, this.settings.get('llm.coordinates'));
         parts.push(`Robot: ${frame.here()}${inArea(pose.x, pose.y, pose.z)}.`);
+        // Awareness: what the map says about the blocks right around the robot (Vision keeps it fresh).
+        const r = this.settings.get('awareness.radius');
+        if (this.map && r > 0) parts.push(mapSummary(this.map, pose, r, this.settings.get('llm.coordinates')));
       } catch {
         parts.push('Robot: position unknown (there may be no agent in this world yet; run_command "agent create" makes one).');
       }

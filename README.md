@@ -182,9 +182,15 @@ Everything the robot sees goes into its **map** of the world, and stays there:
 - **Entities** are identified once: working out *what* an entity is takes a few round trips (see
   [Seeing entities](#seeing-entities)), but each keeps its uniqueId, so Vision only asks where
   everything is, and a new id is identified in the background.
-- **Awareness radius** (3): the part of the map around the robot that counts as what it's aware of,
-  as opposed to all it has mapped. The Nanny Cam's Awareness filter shows it. (The LLM doesn't get
-  it automatically yet: for now it still sees the world through `scan` and `get_blocks`.)
+- **Awareness radius** (3): the part of the map around the robot it's aware of, as opposed to all it
+  has mapped. The LLM gets it with every request: the `[Now]` block has an "Around you" summary of
+  the map within that radius (what's next to the robot, the ground below, counts, where the less
+  common blocks are), which Vision keeps fresh, so the model rarely needs to scan just to see where
+  it is. It's one line while the map knows almost nothing there. 0 turns it off; a bigger radius
+  means a longer prompt. The Nanny Cam's Awareness filter shows it.
+- **The `scan` tool uses the map too:** up to radius 4 it looks at everything again (it may have
+  changed); further out, only at what the map doesn't know yet, and describes the rest from the map.
+  A second radius-8 scan of the same place costs 730 commands instead of 4,913.
 
 The ranges are under Configuration → Robot & paths → Map and vision.
 
@@ -288,7 +294,8 @@ makes it forget everything said so far.
   or the tools. Servers that cache the start of a prompt (LM Studio, llama.cpp, Anthropic) can then
   skip re-reading it, which is where most of the time goes with long prompts.
 - **A fresh `[Now]` block** is added to the newest message on every call. It says where the robot and
-  the player are, the world's memory, and where the request came from. It's left out of older
+  the player are, what the map knows right around the robot ("Around you", the Awareness radius), the
+  world's memory, and where the request came from. It's left out of older
   messages, so the model sees one current copy, not a pile of outdated ones.
 - **Only the newest snapshot of each kind** (`scan`, `get_status`, `get_memory`, `todo_write`) is sent
   in full. Older ones are replaced by a one-line note. A scan's blocks and entities count separately, so
@@ -462,7 +469,7 @@ report what really happened, because the game says "success" even when the robot
 | Tool | What it does |
 | --- | --- |
 | `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
-| `scan` | `what: "blocks"`: scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
+| `scan` | `what: "blocks"`: look at a cube around the robot (fresh up to radius 4, then only what the map doesn't know; see [The map and Vision](#the-map-and-vision)) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
 | `get_blocks` | The block at up to 64 positions, relative or world |
 | `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |

@@ -54,7 +54,9 @@ class Brain {
     this.toolbox.setDescriber((t) => this.commands.toolDescription(t.name, t.description));
     this.commands.on('change', () => this.broadcast(this.commands.message()));
 
-    this.pilot = new Pilot({ settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands });
+    this.pilot = new Pilot({
+      settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands, map: deps.world,
+    });
     this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds });
     this.mcp = new McpServer({ toolbox: this.toolbox, settings, bridge, worlds: this.worlds, commands: this.commands });
 

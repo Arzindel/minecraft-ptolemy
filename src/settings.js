@@ -123,9 +123,10 @@ const SCHEMA = [
       { key: 'vision.idleSeconds', label: 'Look around when idle every (seconds)', default: 2, min: 0, max: 60, step: 1,
         help: 'Vision also looks around while the robot is doing nothing, so the Nanny Cam stays live. 0: only after steps '
           + 'and actions.' },
-      { key: 'awareness.radius', label: 'Awareness radius', default: 3, min: 1, max: 15, step: 1,
-        help: 'The part of the map around the robot that counts as what it is aware of (3 = 7x7x7), as opposed to the '
-          + 'whole map it keeps. The Nanny Cam\'s Awareness filter shows it.' },
+      { key: 'awareness.radius', label: 'Awareness radius', default: 3, min: 0, max: 8, step: 1,
+        help: 'The part of the map around the robot it is aware of (3 = 7x7x7), as opposed to the whole map it keeps: the '
+          + 'model is told about it with every request (what is next to the robot, the ground, the less common blocks), so '
+          + 'it rarely needs to scan. Bigger means a longer prompt. 0: off. The Nanny Cam\'s Awareness filter shows it.' },
     ],
   },
   {
