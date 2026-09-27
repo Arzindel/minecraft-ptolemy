@@ -33,6 +33,9 @@ const SEARCHES = [
 ];
 const SEARCH_MARGIN = 48;
 const TIE_BREAK = 1.001;
+// A step that costs this much more than planned contradicts the plan (e.g. wall support, 5, gone:
+// airborne, 40).
+const STEP_CONTRADICTION = 10;
 // How far (in columns) a surface trip borrows the measured ground height for columns not surveyed.
 const GUESS_REACH = 16;
 const WORLD_MIN_Y = -64;
@@ -41,23 +44,11 @@ const WORLD_MAX_Y = 319;
 const FLOOD_LIMIT = 50000;
 
 /**
- * Plan a route for the agent (a 1x1x1 flyer) from `start` ({x, y, z, facing}) to a goal.
- *
- * The goal is { x, y, z } (end exactly there) or { x, y, z, cells } (end on any of those cells,
- * e.g. the cells around a player or around a solid block). With `goal.arrival` (a Map of
- * "x,y,z" -> cost), ending on a cell costs that much extra, plus `finalMultiplier` times what
- * standing there costs (its walking support cost: ground 1, wall 5, midair 40...), so the route
- * prefers to end close to the target, standing on solid ground.
- *
- * The agent always faces where it travels: horizontal moves are `move forward`, preceded by
- * turns. Vertical moves don't need turning.
- *
- * Returns { steps, cells, unknownSteps } or { error }.
+ * How much entering each cell costs, as the planner sees it (see planPath's options). `box` is the
+ * area whose columns get ground guesses precomputed ({ x0, z0, x1, z1 }). Returns { state, unseen,
+ * supportCost, enter }: enter(x, y, z) is the cost of stepping into a cell (Infinity if solid).
  */
-function planPath(world, start, goal, {
-  hug = false, costs = DEFAULT_COSTS, turnCost = 1, unknownPenalty = 0.5, finalMultiplier = 10, underground = true,
-  searches = SEARCHES,
-} = {}) {
+function costModel(world, box, { hug = false, costs = DEFAULT_COSTS, unknownPenalty = 0.5, underground = true } = {}) {
   // With `underground: false` (a trip over the surface, after a ground survey), unseen cells are
   // guessed from the ground measured in their column, or in the nearest column measured within
   // GUESS_REACH: below the ground they count as solid (ground has no holes to walk into from the
@@ -65,32 +56,16 @@ function planPath(world, start, goal, {
   // seen cells. Without this, unseen cells priced as flat ground at any height were cheaper than the
   // real, bumpy ground next to them: the planner tunnelled through riverbanks and floated along
   // just outside the surveyed strip.
-  // Keep the search inside a box around the start and the goal, with room for detours (the map may
-  // know the whole world the robot has seen, far more than a search should wander through).
-  const lo = [Math.min(start.x, goal.x), Math.min(start.y, goal.y), Math.min(start.z, goal.z)];
-  const hi = [Math.max(start.x, goal.x), Math.max(start.y, goal.y), Math.max(start.z, goal.z)];
-  const margin = Math.max(SEARCH_MARGIN, Math.ceil(Math.max(hi[0] - lo[0], hi[2] - lo[2]) / 2));
-  // Numeric indices for cells (and cell + facing states): much faster map keys than strings. The
-  // index box is the search box padded by 2, so neighbours of cells in the search box fit too.
-  const bx = lo[0] - margin - 2;
-  const by = Math.max(WORLD_MIN_Y, lo[1] - margin) - 2;
-  const bz = lo[2] - margin - 2;
-  const NY = Math.min(WORLD_MAX_Y, hi[1] + margin) + 2 - by + 1;
-  const NZ = hi[2] + margin + 2 - bz + 1;
-  const cellIndex = (x, y, z) => ((x - bx) * NY + (y - by)) * NZ + (z - bz);
-  const inBox = (x, y, z) => x >= lo[0] - margin && x <= hi[0] + margin
-    && z >= lo[2] - margin && z <= hi[2] + margin
-    && y >= Math.max(WORLD_MIN_Y, lo[1] - margin) && y <= Math.min(WORLD_MAX_Y, hi[1] + margin);
-
   // Nearest measured ground for every column of the search box, by a flood fill from the columns a
   // survey measured, up to GUESS_REACH columns away (NONE beyond).
   const NONE = -9999;
-  const GX = hi[0] + margin + 2 - bx + 1; // columns along x in the index box
+  const GX = box.x1 - box.x0 + 1;
+  const NZ = box.z1 - box.z0 + 1;
   let groundGrid = null;
   const groundNear = (x, z) => {
     if (!groundGrid) groundGrid = nearestGround();
-    const ix = x - bx;
-    const iz = z - bz;
+    const ix = x - box.x0;
+    const iz = z - box.z0;
     if (ix < 0 || iz < 0 || ix >= GX || iz >= NZ) return world.groundY(x, z);
     const g = groundGrid[ix * NZ + iz];
     return g === NONE ? null : g;
@@ -98,8 +73,8 @@ function planPath(world, start, goal, {
   function nearestGround() {
     const grid = new Int32Array(GX * NZ).fill(NONE);
     let frontier = [];
-    world.forEachGround(bx, bz, bx + GX - 1, bz + NZ - 1, (x, z, y) => {
-      const i = (x - bx) * NZ + (z - bz);
+    world.forEachGround(box.x0, box.z0, box.x0 + GX - 1, box.z0 + NZ - 1, (x, z, y) => {
+      const i = (x - box.x0) * NZ + (z - box.z0);
       grid[i] = y;
       frontier.push(i);
     });
@@ -128,6 +103,119 @@ function planPath(world, start, goal, {
     return y <= g ? 'solid' : 'guess';
   };
   const unseen = (st) => st === 'unknown' || st === 'guess';
+  // Cost of entering a cell when walking: its best support, counting only blocks known to be solid.
+  // An unseen cell costs a plain ground step (plus unknownPenalty, added by the search): nothing is
+  // known about the terrain there, so the planner assumes it can be walked, whatever its height.
+  // Guessing the terrain instead (e.g. "flat, as far as it was seen") made every unseen cell off that
+  // guess cost the airborne price, so a target a few blocks higher or lower than the ground at the
+  // edge of Sight looked like a long flight and the search ran out of budget before finding any
+  // route. The walker rescans before entering unseen cells and re-plans with what's actually there,
+  // so a cliff or a hill past the edge of Sight is found and handled as soon as the robot gets near.
+  const supportCache = new Map();
+  const supportCost = (x, y, z) => {
+    const k = ((x + 2 ** 21) * 2 ** 22 + (z + 2 ** 21)) * 512 + (y + 64);
+    if (supportCache.has(k)) return supportCache.get(k);
+    let best = costs.airborne;
+    if (state(x, y, z) === 'unknown') {
+      best = costs.ground;
+    } else {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            if ((dx || dy || dz) && state(x + dx, y + dy, z + dz) === 'solid') {
+              best = Math.min(best, costs[supportFrom(dx, dy, dz)]);
+            }
+          }
+        }
+      }
+    }
+    supportCache.set(k, best);
+    return best;
+  };
+
+  const enter = (x, y, z) => {
+    const here = state(x, y, z);
+    if (here === 'solid') return Infinity;
+    return (hug ? supportCost(x, y, z) : 1) + (unseen(here) ? unknownPenalty : 0);
+  };
+  return { state, unseen, supportCost, enter };
+}
+
+/**
+ * What each of a plan's `steps` costs with what is known now (Infinity for a step into a solid
+ * cell). Compared with what they cost when planned, it says whether new information changed the
+ * picture: see contradicts().
+ */
+function pathCosts(world, steps, { turnCost = 1, ...options } = {}) {
+  const cells = steps.filter((s) => s.enters).map((s) => s.enters);
+  if (!cells.length) return steps.map(() => turnCost);
+  const pad = GUESS_REACH + 2;
+  const box = {
+    x0: Math.min(...cells.map((c) => c[0])) - pad, x1: Math.max(...cells.map((c) => c[0])) + pad,
+    z0: Math.min(...cells.map((c) => c[2])) - pad, z1: Math.max(...cells.map((c) => c[2])) + pad,
+  };
+  const model = costModel(world, box, options);
+  return steps.map((s) => (s.enters ? model.enter(...s.enters) : turnCost));
+}
+
+/**
+ * Does what is known now contradict a plan? Yes if a cell it goes into is solid, if a step got
+ * much dearer than planned (the wall or ground it leaned on isn't there: it would be flying), or if
+ * the whole walk did. New information that only confirms the plan (or makes it cheaper) doesn't:
+ * then the plan stands, and nothing is planned again.
+ */
+function contradicts(world, plan, options) {
+  const now = pathCosts(world, plan.steps, options);
+  let before = 0;
+  let after = 0;
+  for (let i = 0; i < now.length; i++) {
+    if (now[i] === Infinity) return 'something solid is in the way';
+    if (now[i] > plan.steps[i].cost + STEP_CONTRADICTION) return 'a step lost what would hold the robot up there';
+    before += plan.steps[i].cost;
+    after += now[i];
+  }
+  return after > before * 1.25 + 2 ? 'the way turned out much harder than planned' : null;
+}
+
+/**
+ * Plan a route for the agent (a 1x1x1 flyer) from `start` ({x, y, z, facing}) to a goal.
+ *
+ * The goal is { x, y, z } (end exactly there) or { x, y, z, cells } (end on any of those cells,
+ * e.g. the cells around a player or around a solid block). With `goal.arrival` (a Map of
+ * "x,y,z" -> cost), ending on a cell costs that much extra, plus `finalMultiplier` times what
+ * standing there costs (its walking support cost: ground 1, wall 5, midair 40...), so the route
+ * prefers to end close to the target, standing on solid ground.
+ *
+ * The agent always faces where it travels: horizontal moves are `move forward`, preceded by
+ * turns. Vertical moves don't need turning.
+ *
+ * Returns { steps, cells, unknownSteps } or { error }.
+ */
+function planPath(world, start, goal, {
+  hug = false, costs = DEFAULT_COSTS, turnCost = 1, unknownPenalty = 0.5, finalMultiplier = 10, underground = true,
+  searches = SEARCHES,
+} = {}) {
+  // Keep the search inside a box around the start and the goal, with room for detours (the map may
+  // know the whole world the robot has seen, far more than a search should wander through).
+  const lo = [Math.min(start.x, goal.x), Math.min(start.y, goal.y), Math.min(start.z, goal.z)];
+  const hi = [Math.max(start.x, goal.x), Math.max(start.y, goal.y), Math.max(start.z, goal.z)];
+  const margin = Math.max(SEARCH_MARGIN, Math.ceil(Math.max(hi[0] - lo[0], hi[2] - lo[2]) / 2));
+  // Numeric indices for cells (and cell + facing states): much faster map keys than strings. The
+  // index box is the search box padded by 2, so neighbours of cells in the search box fit too.
+  const bx = lo[0] - margin - 2;
+  const by = Math.max(WORLD_MIN_Y, lo[1] - margin) - 2;
+  const bz = lo[2] - margin - 2;
+  const NY = Math.min(WORLD_MAX_Y, hi[1] + margin) + 2 - by + 1;
+  const NZ = hi[2] + margin + 2 - bz + 1;
+  const cellIndex = (x, y, z) => ((x - bx) * NY + (y - by)) * NZ + (z - bz);
+  const inBox = (x, y, z) => x >= lo[0] - margin && x <= hi[0] + margin
+    && z >= lo[2] - margin && z <= hi[2] + margin
+    && y >= Math.max(WORLD_MIN_Y, lo[1] - margin) && y <= Math.min(WORLD_MAX_Y, hi[1] + margin);
+
+  const GX = hi[0] + margin + 2 - bx + 1; // columns along x in the index box
+  const model = costModel(world, { x0: bx, z0: bz, x1: bx + GX - 1, z1: bz + NZ - 1 },
+    { hug, costs, unknownPenalty, underground });
+  const { state, unseen, supportCost } = model;
   // Cheapest possible move, so the distance estimate never overestimates (keeps A* optimal).
   const cheapest = hug ? Math.min(...Object.values(costs)) : 1;
   const goalCells = goal.cells || [[goal.x, goal.y, goal.z]];
@@ -152,36 +240,6 @@ function planPath(world, start, goal, {
       + 'so it can\'t get anywhere without breaking one' };
   }
 
-  // Cost of entering a cell when walking: its best support, counting only blocks known to be solid.
-  // An unseen cell costs a plain ground step (plus unknownPenalty, added by the search): nothing is
-  // known about the terrain there, so the planner assumes it can be walked, whatever its height.
-  // Guessing the terrain instead (e.g. "flat, as far as it was seen") made every unseen cell off that
-  // guess cost the airborne price, so a target a few blocks higher or lower than the ground at the
-  // edge of Sight looked like a long flight and the search ran out of budget before finding any
-  // route. The walker rescans before entering unseen cells and re-plans with what's actually there,
-  // so a cliff or a hill past the edge of Sight is found and handled as soon as the robot gets near.
-  const supportCache = new Map();
-  const supportCost = (x, y, z) => {
-    const k = cellIndex(x, y, z);
-    if (supportCache.has(k)) return supportCache.get(k);
-    let best = costs.airborne;
-    if (state(x, y, z) === 'unknown') {
-      best = costs.ground;
-    } else {
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dz = -1; dz <= 1; dz++) {
-            if ((dx || dy || dz) && state(x + dx, y + dy, z + dz) === 'solid') {
-              best = Math.min(best, costs[supportFrom(dx, dy, dz)]);
-            }
-          }
-        }
-      }
-    }
-    supportCache.set(k, best);
-    return best;
-  };
-
   // Extra cost of ending on a goal cell (0 without arrival costs).
   const endCost = (x, y, z) => (arrival ? (arrival.get(`${x},${y},${z}`) || 0) + finalMultiplier * supportCost(x, y, z) : 0);
 
@@ -204,7 +262,7 @@ function planPath(world, start, goal, {
   }
   const approximate = stage > 0 && searches[stage] ? searches[stage].weight : false;
   if (result.gaveUp) return { error: 'search gave up (the area is too large or too maze-like)' };
-  const { reached, cameFrom } = result;
+  const { reached, cameFrom, bestCost } = result;
   if (reached === null || reached === undefined) {
     return { error: 'the target cannot be reached' };
   }
@@ -222,14 +280,14 @@ function planPath(world, start, goal, {
     while (queue.size) {
       const k = queue.pop();
       // Ending here was the cheapest option left: done.
-      if (k < 0) return { reached: -k - 1, cameFrom, expansions };
+      if (k < 0) return { reached: -k - 1, cameFrom, bestCost, expansions };
       const node = decode(k);
       const cost0 = bestCost.get(k);
       if (isGoal(node.x, node.y, node.z)) {
         // Without arrival costs the first goal cell reached is the answer. With them, stopping here
         // becomes one more option in the queue, priced with its arrival cost; the search goes on in
         // case a better place to stop is still ahead.
-        if (!arrival) return { reached: k, cameFrom, expansions };
+        if (!arrival) return { reached: k, cameFrom, bestCost, expansions };
         queue.push(cost0 + endCost(node.x, node.y, node.z), -k - 1);
       }
       if (++expansions > maxExpansions) return { gaveUp: true };
@@ -265,20 +323,22 @@ function planPath(world, start, goal, {
   const chain = [];
   for (let k = reached; cameFrom.get(k) !== -1; ) {
     const link = cameFrom.get(k);
-    chain.push({ action: ACTIONS[link % 8], expect: decode(k) });
-    k = (link - (link % 8)) / 8;
+    const from = (link - (link % 8)) / 8;
+    chain.push({ action: ACTIONS[link % 8], expect: decode(k), cost: bestCost.get(k) - bestCost.get(from) });
+    k = from;
   }
   chain.reverse();
 
-  const steps = chain.map(({ action, expect }) => ({
+  const steps = chain.map(({ action, expect, cost }) => ({
     action,
+    cost, // what this step cost when planned, to tell later whether new information changed it
     command: action.startsWith('turn') ? `agent ${action}` : `agent move ${action}`,
     expect,
     enters: action.startsWith('turn') ? null : [expect.x, expect.y, expect.z],
     unknown: !action.startsWith('turn') && world.state(expect.x, expect.y, expect.z) === 'unknown',
   }));
   const cells = [[start.x, start.y, start.z], ...steps.filter((s) => s.enters).map((s) => s.enters)];
-  return { steps, cells, unknownSteps: steps.filter((s) => s.unknown).length, approximate };
+  return { steps, cells, unknownSteps: steps.filter((s) => s.unknown).length, approximate, cost: bestCost.get(reached) };
 }
 
 /**
@@ -378,4 +438,4 @@ function cellsAround(x, y, z) {
   return cells;
 }
 
-module.exports = { planPath, summarizeSteps, cellsAround, DEFAULT_COSTS, supportFrom };
+module.exports = { planPath, pathCosts, contradicts, summarizeSteps, cellsAround, DEFAULT_COSTS, supportFrom };

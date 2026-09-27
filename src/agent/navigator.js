@@ -1,10 +1,10 @@
 'use strict';
 
-const { planPath, summarizeSteps, cellsAround } = require('./pathfind');
+const { planPath, summarizeSteps, cellsAround, contradicts } = require('./pathfind');
 const { getAgentPose, samePose, describePose } = require('./pose');
 const { playerPosition } = require('./players');
 const { aheadOnPath } = require('./vision');
-const { surveySurface, checkCells, unknownAround, corridorCells } = require('./survey');
+const { surveySurface, surveyColumns, checkCells, unknownAround, corridorCells } = require('./survey');
 
 const SAFE_WAIT_MS = 2000;
 // Re-plans after Vision saw the path blocked, per walk (each costs nothing but a plan).
@@ -24,6 +24,8 @@ const METHODS = {
 };
 // Look-ahead: the cube scanned (unseen cells only) where the plan first meets the unknown.
 const LOOK_RADIUS = 3;
+// Look-ahead: when something solid is in the way, the ground is measured this far around it.
+const HILL_RADIUS = 4;
 // Method 1: the radius of the five tubes scanned between the robot and the target.
 const CORRIDOR_RADIUS = 2;
 const SAFE_POLL_MS = 100;
@@ -170,41 +172,80 @@ class Navigator {
         this.log(`Looking ahead: ${around.length} unseen cells around the target first.`);
       }
     }
-    let overGround = how === 'surface';
+    // Looking ahead on a trip between two places under open sky may guess the ground like surface
+    // does (see below: what's found in the way gets its ground measured). Under a roof, no guesses.
+    let overGround = how === 'surface' || (how === 'lookahead' && !(await this._endsCovered(pose, goal)));
+
+    // The plan is kept while what's learned only confirms it; it's planned again when something
+    // contradicts it (a cell in the way, a step that lost what held the robot up), and after a walk.
+    let plan = null;
+    const planOptions = () => ({ ...this._planOptions(fly), underground: !overGround });
+    // Learned something new about the plan's cells: does it still stand?
+    const recheck = (what) => {
+      const why = contradicts(this.world, plan, planOptions());
+      if (why) {
+        this.log(`${what}; ${why}, so planning again.`);
+        plan = null;
+      } else {
+        this.log(`${what}; the plan stands.`);
+      }
+      return why;
+    };
 
     for (;;) {
-      // A target that turned out to be solid once seen means "go next to it".
-      if (!goal.cells && this.world.state(goal.x, goal.y, goal.z) === 'solid') {
-        goal = { ...goal, cells: cellsAround(goal.x, goal.y, goal.z) };
+      if (!plan) {
+        // A target that turned out to be solid once seen means "go next to it".
+        if (!goal.cells && this.world.state(goal.x, goal.y, goal.z) === 'solid') {
+          goal = { ...goal, cells: cellsAround(goal.x, goal.y, goal.z) };
+        }
+        plan = planPath(this.world, pose, goal, planOptions());
+        if (plan.error && overGround) {
+          // No way over the surface as guessed (say, the target is in a cave): look ahead instead.
+          overGround = false;
+          how = 'lookahead';
+          this.log(`No way over the ground as measured, so ${METHODS.corridor} instead.`);
+          await this._scanCorridor(pose, goal);
+          plan = null;
+          continue;
+        }
+        if (plan.error) {
+          this._setPath(kind, null);
+          this.log(`Stopped: no path to ${describeGoal(goal)} from ${describePose(pose)}: ${plan.error}.`);
+          return;
+        }
+        this._setPath(kind, { start: pose, goal, ...plan });
+        if (!plan.steps.length) {
+          this.log(`Arrived at ${describePose(pose)}.`);
+          return;
+        }
       }
-      let plan = planPath(this.world, pose, goal, { ...this._planOptions(fly), underground: !overGround });
-      if (plan.error && overGround) {
-        // No way over the surface as guessed (say, the target is in a cave): look ahead instead.
-        overGround = false;
-        how = 'lookahead';
-        this.log(`No way over the ground as measured, so ${METHODS.corridor} instead.`);
-        await this._scanCorridor(pose, goal);
-        continue;
-      }
-      if (plan.error) {
-        this._setPath(kind, null);
-        this.log(`Stopped: no path to ${describeGoal(goal)} from ${describePose(pose)}: ${plan.error}.`);
-        return;
-      }
-      this._setPath(kind, { start: pose, goal, ...plan });
-      if (!plan.steps.length) {
-        this.log(`Arrived at ${describePose(pose)}.`);
-        return;
-      }
-
-      // Before walking, check the cells the path goes through that nobody has actually seen (never
-      // seen, or only "clear" by the ground survey: they may be leaves or water), then plan again
-      // with what they turned out to be. Cheap: one command per cell, all in one go.
       const unseen = (st) => st.enters && (how === 'rescan' ? st.unknown : !this.world.verified(...st.enters));
 
+      // Method 2, where the plan leaves the measured strip (a detour around a wall, say): measure
+      // the ground of the columns it goes through, instead of relying on guesses.
+      if (how === 'surface' && overGround && checks < MAX_CHECKS) {
+        const columns = new Map();
+        for (const st of plan.steps) {
+          if (!st.enters) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+              const [x, z] = [st.enters[0] + dx, st.enters[2] + dz];
+              if (this.world.groundY(x, z) === null) columns.set(`${x},${z}`, [x, z]);
+            }
+          }
+        }
+        if (columns.size) {
+          checks++;
+          const top = Math.max(...plan.steps.filter((st) => st.enters).map((st) => st.enters[1]));
+          const s = await surveyColumns(this.bridge, this.world, [...columns.values()], top);
+          recheck(`Measuring the ground where the plan leaves the survey: ${s.columns} more columns (${checks}/${MAX_CHECKS})`);
+          continue;
+        }
+      }
+
       // Method 3, before moving: where the plan meets the unknown, scan the unseen cells around that
-      // spot and plan again, alternating between the robot's end of the plan and the target's end, so
-      // both sides fill in until they meet.
+      // spot, alternating between the robot's end of the plan and the target's end, so both sides
+      // fill in until they meet. Plan again only if what's found contradicts the plan.
       if (how === 'lookahead' && looks < maxLooks) {
         const unknown = plan.steps.filter((st) => st.enters && this.world.state(...st.enters) === 'unknown');
         if (unknown.length) {
@@ -212,28 +253,42 @@ class Navigator {
           looks++;
           const cells = unknownAround(this.world, { x: at[0], y: at[1], z: at[2] }, LOOK_RADIUS);
           await checkCells(this.bridge, this.world, cells);
-          this.log(`Looking ahead: ${cells.length} unseen cells around ${at.join(' ')}, `
-            + `${looks % 2 ? 'the first' : 'the last'} unknown spot on the plan (${looks}/${maxLooks}).`);
+          const why = recheck(`Looking ahead: ${cells.length} unseen cells around ${at.join(' ')}, `
+            + `${looks % 2 ? 'the first' : 'the last'} unknown spot on the plan (${looks}/${maxLooks})`);
+          // Something solid in the way is likely a hill or a mountain, not a lone wall: every scan
+          // further into it would just find more of it. Measure the ground around it (one command a
+          // column) so the next plan goes over or around it straight away.
+          if (why && overGround) {
+            const columns = [];
+            for (let dx = -HILL_RADIUS; dx <= HILL_RADIUS; dx++) {
+              for (let dz = -HILL_RADIUS; dz <= HILL_RADIUS; dz++) {
+                if (this.world.groundY(at[0] + dx, at[2] + dz) === null) columns.push([at[0] + dx, at[2] + dz]);
+              }
+            }
+            if (columns.length) {
+              await surveyColumns(this.bridge, this.world, columns, Math.max(at[1], goal.y));
+              this.log(`Looking ahead: measured the ground of ${columns.length} columns around what's in the way, `
+                + 'to plan over or around it.');
+            }
+          }
           continue;
         }
       }
 
+      // Before walking, check the cells the path goes through that nobody has actually seen (never
+      // seen, or only "clear" by the ground survey: they may be leaves or water), and the ones beside
+      // and below them that hold the robot up there (the plan may lean on a guess: a wall or a bank
+      // that isn't really there). Flying needs nothing to hold it up: only its own cells matter.
       if (how !== 'rescan' && checks < MAX_CHECKS) {
-        // The cells the path goes through, and the ones beside and below them that hold the robot up
-        // there (the plan may have leaned on a guess: a wall or a bank that isn't really there).
         const doubtful = [];
         for (const st of plan.steps) {
           if (!st.enters) continue;
-          // Flying needs nothing to hold it up: only the cells it goes through matter.
           for (const c of fly ? [st.enters] : [st.enters, ...leanedOn(st.enters)]) if (!this.world.verified(...c)) doubtful.push(c);
         }
         if (doubtful.length) {
           checks++;
           const n = await checkCells(this.bridge, this.world, doubtful);
-          const blocked = plan.steps.filter((st) => st.enters && this.world.state(...st.enters) === 'solid');
-          this.log(`Checking the path: looked at ${n} unseen cells on and around it (${checks}/${MAX_CHECKS})`
-            + `${blocked.length ? `, ${blocked.length} of them in the way` : ''}; planning again with what they are.`);
-          // Walk only a plan that comes back entirely seen: what was checked may change what's cheapest.
+          recheck(`Checking the path: looked at ${n} unseen cells on and around it (${checks}/${MAX_CHECKS})`);
           continue;
         }
       }
@@ -243,13 +298,14 @@ class Navigator {
       const known = stopAt === -1 ? plan.steps : plan.steps.slice(0, stopAt);
       const result = await this._walk(known, { ahead: plan.steps });
       pose = result.pose;
+      plan = null; // walked (or interrupted): the next plan starts from where the robot is
 
       if (result.stopped) {
         this.log(`Stopped by #pathstop at ${describePose(pose)}.`);
         return;
       }
       if (result.seenBlocked) {
-        // Seen before bumping into it, and already on the map: just plan again from here.
+        // Vision saw something in the way that wasn't expected: plan again from here.
         if (++replans > MAX_REPLANS) {
           this.log(`Giving up after re-planning ${MAX_REPLANS} times around things in the way, at ${describePose(pose)}.`);
           return;
@@ -286,6 +342,16 @@ class Navigator {
       await this.scan(radius, { quiet: true });
       checks = 0;
     }
+  }
+
+  /** Is either end under something solid (indoors, in a cave)? Two gettopsolidblock calls. */
+  async _endsCovered(pose, goal) {
+    const ends = [[pose.x, pose.z], [goal.x, goal.z]];
+    await surveyColumns(this.bridge, this.world, ends, Math.max(pose.y, goal.y));
+    return [pose, goal].some((e) => {
+      const g = this.world.groundY(e.x, e.z);
+      return g !== null && g >= e.y;
+    });
   }
 
   /** Method 1: scan the unseen cells of the five tubes between the robot and the goal. */

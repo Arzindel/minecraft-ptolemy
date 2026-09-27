@@ -251,9 +251,20 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   step fails (someone closed the door), it marks that cell as blocked, rescans and re-plans. That
   counts as a retry, and it hard-stops after `retries` failures.
 
+- **Stored paths:** walking and flight paths are stored separately (`#pathwalk` walks the one from
+  `#pathfind`, `#flypathwalk` the one from `#flypathfind`). A stored path is only valid while the
+  agent is at its start. It's dropped as soon as the agent moves (by hand, by a walk of the other
+  path, or as seen by a scan), and it's used up once walked.
+- **Nanny Cam:** walking paths show as cyan beads and flight paths as magenta ones. They fade as the
+  robot walks them, and a finished walk leaves a faded trail. The robot's marker follows it while it walks.
+
 ### Finding the way
 
-`#pathfindwalk` and `go_to` pick a method (`method=` on `#pathfindwalk`; `auto` by default):
+`#pathfindwalk` and `go_to` pick a method (`method=` on `#pathfindwalk`; `auto` by default). They all
+follow one rule: **a plan is kept while what's learned only confirms it**, and planned again when
+something contradicts it: a cell it goes into turned out solid, or a step lost what would hold the
+robot up there (the wall it leaned on isn't there), or the whole way turned out much harder than
+planned. Vision while walking works the same way.
 
 - **`surface`** (the default when walking): first **measure the ground** between the robot and the
   target with `gettopsolidblock x y z`, which answers with the first block below y that isn't air,
@@ -261,35 +272,31 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   a few hundred commands in one go. What it looked straight through is marked "clear" on the map:
   probably free, but it can't see leaves or water. An end with something solid over it is indoors or
   underground (the survey only saw the roof), so the unseen cells around it are scanned too. Then
-  **plan, and check the path**: `testforblock` on exactly the cells the path goes through that nobody
-  has actually seen (usually under a hundred, one flight). If any turned out to be in the way (leaves,
-  a log), plan again and check the new cells; a clear path is walked as it is. Unloaded chunks
-  (`gettopsolidblock` answers "No solid blocks under specified position") stay unknown.
+  **plan**. Where the plan leaves the measured strip (a detour around a wall, say), measure those
+  columns too. Then **check the path**: `testforblock` on the unseen cells it goes through and the
+  ones that hold it up (usually a few hundred, a few flights). Unloaded chunks (`gettopsolidblock`
+  answers "No solid blocks under specified position") stay unknown.
 - **`corridor`** (the default when flying, and what `surface` switches to when there's no way over
   the ground as measured, e.g. to a cave): first scan five tubes of radius 2 between the robot and
   the target: straight up or down from each to the other's height, the two level lines that close
   that rectangle, and the diagonal (a few thousand cells for 60 blocks, only the unseen ones). That
-  covers the straight flight and the ways around it above and below, and works underground. Then it
-  carries on as `lookahead`.
-- **`lookahead`**: before moving, plan through the unknown optimistically,
-  then scan the unseen cells around the spot where the plan first meets the unknown (a cube of radius
-  3) and plan again. The spots alternate between the robot's end of the plan and the target's end, so
-  both sides fill in until they meet; a target in the unknown gets looked around first. Then the
-  path is checked like `surface` does (only the cells it goes through, when flying) and walked. In a
-  winding cave tunnel it used 41k commands where rescanning used 218k.
+  gives the plan something to work with from the start, covering the straight flight and the ways
+  around it above and below, and it works underground. Then it carries on as `lookahead`.
+- **`lookahead`**: before moving, plan through the unknown, then scan the unseen cells around the
+  spot where the plan first meets the unknown (a cube of radius 3). The spots alternate between the
+  robot's end of the plan and the target's end, so both sides fill in until they meet; a target in
+  the unknown gets looked around first. When a look finds the way blocked, that's likely a hill or a
+  mountain, not a lone wall, and every scan further into it would just find more of it: the ground
+  around it is measured (`gettopsolidblock`, 81 columns in one go), so the next plan goes over or
+  around it straight away (unless an end is under a roof, e.g. in a cave). Then the path is checked
+  like `surface` does (only the cells it goes through, when flying) and walked.
 - **`rescan`** (the old way): walk what's known, and at the edge of it
   rescan a cube around the robot (the rescan radius, 7 = 3,375 blocks) and re-plan. Rescans are
   budgeted at ⌈2 × distance ÷ scan radius⌉ + 3, so a robot trying to get into a closed box gives up.
-  It is also what `surface` falls back to when checking the path doesn't settle.
+  It is also what the others fall back to when checking doesn't settle.
 
-Everything seen is kept, so running either again carries on from where it stopped. `npm run bench`
-compares the methods on simulated trips.
-- **Stored paths:** walking and flight paths are stored separately (`#pathwalk` walks the one from
-  `#pathfind`, `#flypathwalk` the one from `#flypathfind`). A stored path is only valid while the
-  agent is at its start. It's dropped as soon as the agent moves (by hand, by a walk of the other
-  path, or as seen by a scan), and it's used up once walked.
-- **Nanny Cam:** walking paths show as cyan beads and flight paths as magenta ones. They fade as the
-  robot walks them, and a finished walk leaves a faded trail. The robot's marker follows it while it walks.
+Everything seen is kept, so running any of them again carries on from where it stopped. `npm run
+bench` compares the methods on simulated trips.
 
 ## Automatic mode (LLM)
 

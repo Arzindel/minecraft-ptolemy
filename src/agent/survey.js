@@ -55,9 +55,17 @@ function corridorColumns(a, b, width, endRadius) {
  * Resolves to { columns, unloaded, commands, ground: Map "x,z" -> y of the ground block }.
  */
 async function surveySurface(bridge, world, from, to, { width = 3, endRadius = 3, headroom = 24 } = {}) {
-  const send = (cmd) => bridge.sendCommand(cmd, { quiet: true });
   const columns = corridorColumns(from, to, width, endRadius);
-  const top = Math.min(320, Math.max(from.y, to.y) + headroom);
+  return surveyColumns(bridge, world, columns, Math.max(from.y, to.y), { headroom });
+}
+
+/**
+ * Measure the ground of these columns ([x, z]) with gettopsolidblock, asking from `headroom` above
+ * `aboveY`, and put it on the map. Resolves to { columns, unloaded, commands, ground }.
+ */
+async function surveyColumns(bridge, world, columns, aboveY, { headroom = 24 } = {}) {
+  const send = (cmd) => bridge.sendCommand(cmd, { quiet: true });
+  const top = Math.min(320, aboveY + headroom);
   let commands = 0;
   const ask = (list, yOf) => {
     commands += list.length;
@@ -164,4 +172,4 @@ function unknownAround(world, center, radius) {
   return cells;
 }
 
-module.exports = { surveySurface, checkCells, unknownAround, corridorColumns, corridorCells, displayName };
+module.exports = { surveySurface, surveyColumns, checkCells, unknownAround, corridorColumns, corridorCells, displayName };
