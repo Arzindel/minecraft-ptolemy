@@ -124,6 +124,13 @@
               Scan radius <input type="number" id="cam-scan-radius" min="1" max="15" value="4">
               <span id="cam-scan-size" class="muted">9³</span>
             </label>
+            <label class="cam-control" title="What to look for: blocks (slow, a cube), mobs, animals, players and dropped items (fast), or both">
+              <select id="cam-scan-what">
+                <option value="both">Both</option>
+                <option value="blocks">Blocks</option>
+                <option value="entities">Entities</option>
+              </select>
+            </label>
             <button class="btn btn-primary btn-small" id="cam-scan" type="button">Scan</button>
           </div>
           <div class="cam-view">

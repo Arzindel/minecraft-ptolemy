@@ -16,7 +16,7 @@ const FILE = path.join(__dirname, '..', 'data', 'commands.json');
 const HASH = [
   ['help', '', 'List these commands.'],
   ['ask', '<request>', 'Give the LLM a request, as if typed in the Automatic panel.'],
-  ['scan', '[radius]', 'Identify every block in a cube around the agent (radius 2 = 5x5x5, up to 15). Without a radius, the configured default.'],
+  ['scan', '[radius] [blocks|entities|both]', 'Look around the agent. blocks: identify every block in a cube (radius 2 = 5x5x5, up to 15; without a radius, the configured default). entities: mobs, animals, players and dropped items (default 16 blocks, up to 48), with the raw replies behind the list. both (the default): the two at once. Both show up in the Nanny Cam.'],
   ['pathfind', '<x y z | @p [name]> [near|exact]', 'Plan a route that stays next to blocks. ~ = relative to the agent; @p = a player (near them unless exact).'],
   ['pathwalk', '', 'Walk the last planned route, checking the agent\'s position after every step.'],
   ['pathfindwalk', '<x y z | @p [name]> [near|exact] [scan=7] [retries=3]', 'Plan and walk, rescanning when entering unknown ground and re-planning when blocked.'],
@@ -55,7 +55,8 @@ const SLASH = [
   ['agent getposition', '', 'The agent\'s world position and rotation.', false],
   ['agent detect / inspect / inspectdata', '<direction>', 'Meant to sense blocks, but return no data in regular Bedrock.', false],
   ['testforblock', '<x y z> <block>', 'Checks one block; Ptolemy uses it (with "air") to identify blocks.', false],
-  ['querytarget', '<selector>', 'Position of players or entities; Ptolemy uses it to find players.', false],
+  ['querytarget', '<selector>', 'Position of players or entities (not what they are); Ptolemy uses it to find players and mobs.', false],
+  ['testfor', '<selector>', 'Names of the entities a selector matches, e.g. testfor @e[type=cow,r=10]; Ptolemy uses it to tell mobs apart.', false],
   ['list', '', 'Who is online.', false],
   ['tellraw', '@a <json>', 'Send a formatted chat message; Ptolemy uses it for the robot\'s chat lines.', false],
   ['time set', '<day|night|noon|midnight|value>', 'Set the time of day.', false],
