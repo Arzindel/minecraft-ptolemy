@@ -418,11 +418,15 @@ button) sends a few commands at once, centred on the agent, and matches their an
 
 | Command | What it tells |
 | --- | --- |
-| `querytarget @e[x=..,y=..,z=..,r=..,type=!agent,type=!xp_orb,c=64]` | Where every entity is (up to the 64 nearest), but not what it is |
+| `querytarget @e[x=..,y=..,z=..,r=..,c=65]` | Where every entity is (up to the 64 nearest, plus the robot), but not what it is |
 | `testfor` with the same selector | The names of what's there (`Cow`, `Zombie`, `Alex`), but not where |
 | `querytarget @e[...,name=<name>]` for each name | Which entities carry that name: players and name-tagged mobs |
 | `querytarget @e[...,type=<name as an id>]` for each name | Which are that type (`Zombie Villager` → `zombie_villager`) |
 | `querytarget @e[...,family=monster]`, `type=item`, `type=player` | Which are hostile, dropped items or players |
+
+The robot itself (whatever stands in its own cell) and experience orbs are left out afterwards. They can't be
+excluded in the selector: `agent` is a command keyword, so `type=!agent` is a syntax error. For the same reason,
+names are always quoted in `name="..."`.
 
 Anything the game won't name ends up as "Unidentified entity" (a game language other than English can cause
 that, since the type is guessed from the English name). Positions are a snapshot, so to attack a mob the LLM
