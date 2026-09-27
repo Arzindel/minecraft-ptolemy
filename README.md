@@ -460,8 +460,13 @@ The LLM sees all of it in its system prompt, and MCP clients can read it with `g
 
 The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Robot tab puts everything on one screen:
 
-- **Top half: the dashboard**, scrollable. Each card keeps its own height, and long lists scroll inside
-  the card.
+- **Top half: the dashboard.** It fills the space exactly, so it doesn't scroll:
+  - All cards share one height, the dashboard's height split evenly over the rows.
+  - It uses as many columns (at least 220px wide) as it takes to fit the rows without making cards
+    shorter than 160px.
+  - Longer contents scroll inside their card.
+  - Only in a small window, or zoomed in a lot, do cards stop at that minimum and the dashboard
+    scrolls.
   - The world: its name (click to rename), how it was recognised, other known worlds, and the agent.
   - Right now: where the robot and the player are and in which areas, what the robot is doing, the
     wondering countdown, and the active LLM endpoint with its test dots.

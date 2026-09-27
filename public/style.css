@@ -13,6 +13,8 @@
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --radius: 8px;
+  --card-height: 300px; /* every dashboard card; dashboard.js fits it to the window */
+  --card-min-height: 160px; /* below this the dashboard scrolls instead of squishing cards */
 }
 
 * { box-sizing: border-box; }
@@ -767,17 +769,19 @@ code, pre, input { font-family: var(--mono); }
   .robot-top .dashboard-grid { overflow: visible; }
 }
 
-/* Dashboard cards keep their own height: long lists scroll inside the card instead of stretching the row. */
-.dashboard-grid { align-items: start; }
-.dashboard-grid .card { max-height: 340px; }
-.dashboard-grid .card-body { overflow-y: auto; min-height: 0; }
+/* Dashboard cards are all the same height, so rows line up; anything longer scrolls inside its card. */
+.dashboard-grid { grid-auto-rows: var(--card-height); align-items: stretch; grid-auto-flow: row dense; }
+.dashboard-grid .card { height: var(--card-height); min-height: 0; }
+.dashboard-grid .card-body { overflow-y: auto; min-height: 0; flex: 1; }
 .dashboard-grid .card-inspect .inspect { max-height: none; }
 
 /* Chat & wondering settings in a dashboard card: label and input only. */
 .dash-settings { padding: 0; overflow: visible; }
 .dash-settings .config-group { margin-top: 4px; }
 .dash-settings .config-group + .config-group { margin-top: 14px; }
-.dash-settings .config-row { grid-template-columns: minmax(0, 1fr) 120px; }
+.dash-settings .config-row { grid-template-columns: minmax(0, 1fr) minmax(60px, 110px); gap: 8px; }
+.dash-settings .config-row input[type="checkbox"] { justify-self: end; }
+.dash-settings .config-group > p { display: none; } /* the help text is on each label's tooltip */
 .dash-settings .config-row .config-default { display: none; }
 .dash-settings .config-row-wide { grid-template-columns: 1fr; }
 .dash-settings .config-row-wide textarea { min-height: 90px; }
