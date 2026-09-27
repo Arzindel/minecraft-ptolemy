@@ -36,6 +36,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
 | Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
 | Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
+| The map: everything the robot sees, kept on disk per world; Vision keeps it live | ✅ New, needs real-world testing |
 | Seeing mobs, animals, players and dropped items (`scan` / `#scan` with `entities`, drawn in the Nanny Cam) | ✅ New, needs real-world testing |
 | Automatic mode: LLM control (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic, any OpenAI-compatible server) | ✅ New, needs real-world testing |
 | Endpoint tests (connection, model, tool calling) | ✅ New |
@@ -114,6 +115,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#ask <request>` | Give the LLM a request, as if typed in the Automatic tab |
 | `#wonder off\|on\|always` | Switch wondering (see [Wondering](#wondering)) |
 | `#world` / `#world <name>` | Show which world Ptolemy thinks it's in, or rename it |
+| `#map` / `#map forget` | How much of this world the robot has mapped, or wipe its map. See [The map and Vision](#the-map-and-vision) |
 | `#area list` / `#area add <name> x1 y1 z1 x2 y2 z2` / `#area remove <name>` | Named areas of this world (two opposite corners) |
 | `#boundary <name> x1 x2 y1 y2 z1 z2` | The same as `#area add`, with the coordinates as ranges |
 | `#help` | Show this list |
@@ -162,6 +164,30 @@ scan (29,791 blocks) takes about 30 seconds.
 is up the page and `[ ]` marks the agent's cell. Click the result to see every cell with its world
 and relative coordinates.
 
+## The map and Vision
+
+Everything the robot sees goes into its **map** of the world, and stays there:
+
+- **Storage:** Minecraft's own grid. The map is kept in sub-chunks of 16×16×16 blocks (8 KB each in
+  memory), one gzipped file per chunk column in `data/worlds/<id>/map/`, read when something first
+  needs it. Only recently used columns stay in memory. A column the robot has walked past takes about
+  100 bytes on disk. `#map` says how much is mapped; `#map forget` wipes it.
+- **Vision** is the robot's real-time look around: a small cube of blocks (the **Vision radius**,
+  1 = 3×3×3) and where the entities within the **Vision radius for entities** (9) are. It happens after
+  every step of a walk, after every tool call, and every couple of seconds while idle. Ptolemy
+  checks where the robot is after every step anyway, and Vision rides along in the same flight of
+  commands, so it costs no extra waiting: Bedrock answers the whole flight in about one round trip
+  (up to about 100 commands). While walking, the cube sits `radius` cells ahead on the path, so the
+  robot is on its inner edge and sees what it is about to walk into.
+- **Entities** are identified once: working out *what* an entity is takes a few round trips (see
+  [Seeing entities](#seeing-entities)), but each keeps its uniqueId, so Vision only asks where
+  everything is, and a new id is identified in the background.
+- **Awareness radius** (3): the part of the map around the robot that counts as what it's aware of,
+  as opposed to all it has mapped. The Nanny Cam's Awareness filter shows it. (The LLM doesn't get
+  it automatically yet: for now it still sees the world through `scan` and `get_blocks`.)
+
+The ranges are under Configuration → Robot & paths → Map and vision.
+
 ## Pathfinding
 
 The agent flies like a 1×1×1 drone and can move through anything that isn't solid (air, water,
@@ -174,10 +200,13 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   (it looks better) and moves up and down without turning. A target sealed in by known solid blocks
   is refused straight away, and so is a robot boxed in by them (say, stuck inside a tree's leaves):
   the error says it has to break a block to get out.
-- **What the robot knows** is every scan it has made in this world, a newer scan overwriting what an
-  older one said (up to 200,000 cells, the oldest forgotten first; it all resets when another world
-  opens). Keeping older scans is what lets it walk around a big wall or hill: with only the latest
-  scan, it forgot the part of the wall it had already seen and went back and forth along it.
+- **What the robot knows** is its [map](#the-map-and-vision): every block it has seen in this world,
+  by scans and by Vision, kept on disk. Keeping everything is what lets it walk around a big wall or
+  hill: with only the latest scan, it forgot the part of the wall it had already seen and went back
+  and forth along it.
+- **Vision while walking:** after each step, Vision looks at the cells just ahead on the path in the
+  same flight as the position check. If something solid is now where the path goes (someone built a
+  wall, a door closed), the robot re-plans from the map before bumping into it.
 - **Unseen cells are unknown**, neither air nor wall. The planner assumes it can walk through them:
   an unseen cell costs a ground step plus the "unseen" penalty, whatever its height. `#pathfindwalk`
   stops and rescans before entering one and re-plans with what's really there, so a cliff or a hill
@@ -586,22 +615,25 @@ everything back (endpoints and keys stay).
 
 ## Nanny Cam
 
-The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
-and no libraries:
+The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's [map](#the-map-and-vision)
+around it, up to 30 blocks away, in 3D with WebGL2, using the GPU and no libraries. Vision keeps it live:
+new blocks and entities appear as the robot looks around.
 
+- **Map / Awareness / Vision** pick what's highlighted. All three draw the whole map; Awareness and
+  Vision colour only what's inside the Awareness radius or the cube Vision looked at last (which runs
+  ahead of the robot while it walks), and draw the rest in grey.
 - **Scan** runs a scan of the chosen radius, same as `#scan`: blocks, entities, or both (the picker next to it).
-  Every new block scan replaces Sight here (the pathfinder remembers older scans too; the Nanny Cam only
-  draws the latest); every look for entities replaces the entities shown.
+  Scanned blocks go onto the map; every look for entities replaces the entities shown.
 - **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
   **double-click** to reset.
-- **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
-  or underground. Cut faces are drawn, so you can see inside walls.
+- **Zoom** limits the view to the blocks within that many blocks of the robot (up to 30), which helps
+  indoors or underground. Cut faces are drawn, so you can see inside walls.
 - **Hover** over a block to see its name and coordinates.
 - Named areas from World Memory are outlined with dotted lines, one colour each.
 - The robot is the yellow block. Its darker nose points the way it's facing.
-- Entities, where they were at the last look: hostile mobs are red boxes, other mobs white, players
-  blue two-block columns, dropped items small purple boxes, and anything unidentified grey. Hover over
-  one to see what it is. They don't move until the next look.
+- Entities, where they were at the last look (Vision looks every couple of seconds): hostile mobs are
+  red boxes, other mobs white, players blue two-block columns, dropped items small purple boxes, and
+  anything unidentified grey. Hover over one to see what it is.
 
 Air isn't drawn, and neither are blocks completely enclosed by other blocks. Water, glass and ice
 are drawn see-through, as is everything the robot can move through (plants, flowers, torches...).
@@ -657,8 +689,9 @@ src/
   web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
   settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
   commands.js            the Commands tab: tool, # and / command descriptions, and edits to them
-  agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator),
+  agent/                 scanning, Vision, pose, pathfinding, walking (Navigator), entities,
                          and frame.js: the robot-relative coordinates the model sees
+  world/map.js           the map: every block seen, in 16x16x16 sub-chunks, saved per world
   world/manager.js       which world is open (the scoreboard marker), per-world folders
   world/memory.js        World Memory: areas, todos, thoughts, notes, journal, conversation
   tools/index.js         the robot's tools, shared by the LLM and MCP
@@ -674,6 +707,10 @@ public/
   index.html, style.css, app.js   the WebUI
   dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js   the tabs and panels
   blocks.js              block colours / solidity
+bench/
+  sim.js                 a simulated world and a fake game answering Ptolemy's commands
+  pathfinding.js         the pathfinding benchmark (npm run bench)
+  fake-game.js           try the WebUI without Minecraft (npm run fake-game, after npm start)
 abandoned-minimap-project/        old prototype, kept for reference only
 ```
 

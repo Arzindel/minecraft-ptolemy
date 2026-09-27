@@ -23,7 +23,7 @@ function supportFrom(dx, dy, dz) {
 const EXACT_EXPANSIONS = 120000;
 const GREEDY_EXPANSIONS = 400000;
 const GREEDY_WEIGHT = 8;
-const SEARCH_MARGIN = 32;
+const SEARCH_MARGIN = 48;
 const WORLD_MIN_Y = -64;
 const WORLD_MAX_Y = 319;
 
@@ -70,19 +70,14 @@ function planPath(world, start, goal, {
       + 'so it can\'t get anywhere without breaking one' };
   }
 
-  // Keep the search inside a box around the start, the goal and what's known.
-  const known = world.bounds();
+  // Keep the search inside a box around the start and the goal, with room for detours (the map may
+  // know the whole world the robot has seen, far more than a search should wander through).
   const lo = [Math.min(start.x, goal.x), Math.min(start.y, goal.y), Math.min(start.z, goal.z)];
   const hi = [Math.max(start.x, goal.x), Math.max(start.y, goal.y), Math.max(start.z, goal.z)];
-  if (known) {
-    for (let i = 0; i < 3; i++) {
-      lo[i] = Math.min(lo[i], known.min[i]);
-      hi[i] = Math.max(hi[i], known.max[i]);
-    }
-  }
-  const inBox = (x, y, z) => x >= lo[0] - SEARCH_MARGIN && x <= hi[0] + SEARCH_MARGIN
-    && z >= lo[2] - SEARCH_MARGIN && z <= hi[2] + SEARCH_MARGIN
-    && y >= Math.max(WORLD_MIN_Y, lo[1] - SEARCH_MARGIN) && y <= Math.min(WORLD_MAX_Y, hi[1] + SEARCH_MARGIN);
+  const margin = Math.max(SEARCH_MARGIN, Math.ceil(Math.max(hi[0] - lo[0], hi[2] - lo[2]) / 2));
+  const inBox = (x, y, z) => x >= lo[0] - margin && x <= hi[0] + margin
+    && z >= lo[2] - margin && z <= hi[2] + margin
+    && y >= Math.max(WORLD_MIN_Y, lo[1] - margin) && y <= Math.min(WORLD_MAX_Y, hi[1] + margin);
 
   // Cost of entering a cell when walking: its best support, counting only blocks known to be solid.
   // An unseen cell costs a plain ground step (plus unknownPenalty, added by the search): nothing is

@@ -3,8 +3,11 @@
 const { planPath, summarizeSteps, cellsAround } = require('./pathfind');
 const { getAgentPose, samePose, describePose } = require('./pose');
 const { playerPosition } = require('./players');
+const { aheadOnPath } = require('./vision');
 
 const SAFE_WAIT_MS = 2000;
+// Re-plans after Vision saw the path blocked, per walk (each costs nothing but a plan).
+const MAX_REPLANS = 50;
 const SAFE_POLL_MS = 100;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,13 +23,14 @@ class Navigator {
   /**
    * @param {object} deps
    * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
-   * @param {import('./world').WorldKnowledge} deps.world
+   * @param {import('../world/map').WorldMap} deps.world
    * @param {(radius: number, opts?: {quiet?: boolean}) => Promise<object|null>} deps.scan  refreshes Sight
    * @param {(text: string, extra?: object) => void} deps.log
    * @param {(message: object) => void} deps.broadcast
+   * @param {import('./vision').Vision} [deps.vision]  looks ahead after every step (in the same flight as the position check)
    */
-  constructor({ bridge, world, settings, scan, log, broadcast }) {
-    Object.assign(this, { bridge, world, settings, scan, log, broadcast });
+  constructor({ bridge, world, settings, scan, log, broadcast, vision = null }) {
+    Object.assign(this, { bridge, world, settings, scan, log, broadcast, vision });
     // One stored path per kind ({ start, goal, steps, cells, unknownSteps }). A stored path is only
     // valid while the agent is at its start, so it's dropped as soon as the agent moves, unless
     // that path is the one being walked.
@@ -121,6 +125,7 @@ class Navigator {
     const maxRescans = Math.ceil((2 * distance) / radius) + 3;
     let rescans = 0;
     let failures = 0;
+    let replans = 0;
     this.log(`Heading to ${describeGoal(goal)}, ${round(distance)} blocks away `
       + `(up to ${retries} retries and ${maxRescans} rescans of radius ${radius}).`);
 
@@ -144,12 +149,21 @@ class Navigator {
       // Walk until the plan is about to enter an unknown cell, then look before going on.
       const firstUnknown = plan.steps.findIndex((s) => s.unknown);
       const known = firstUnknown === -1 ? plan.steps : plan.steps.slice(0, firstUnknown);
-      const result = await this._walk(known);
+      const result = await this._walk(known, { ahead: plan.steps });
       pose = result.pose;
 
       if (result.stopped) {
         this.log(`Stopped by #pathstop at ${describePose(pose)}.`);
         return;
+      }
+      if (result.seenBlocked) {
+        // Seen before bumping into it, and already on the map: just plan again from here.
+        if (++replans > MAX_REPLANS) {
+          this.log(`Giving up after re-planning ${MAX_REPLANS} times around things in the way, at ${describePose(pose)}.`);
+          return;
+        }
+        this.log(`Re-planning: ${result.reason}.`);
+        continue;
       }
       if (!result.ok) {
         failures++;
@@ -284,8 +298,13 @@ class Navigator {
     }
   }
 
-  /** Execute steps in order. Stops at the first step whose resulting pose isn't the expected one. */
-  async _walk(steps) {
+  /**
+   * Execute steps in order. Stops at the first step whose resulting pose isn't the expected one.
+   * After each step, Vision looks ahead along `ahead` (the whole plan, of which `steps` may be the
+   * first part) in the same flight as the position check; if that shows something solid where the
+   * plan still has to go, the walk stops before it: { ok: false, seenBlocked: true, step, ... }.
+   */
+  async _walk(steps, { ahead = steps } = {}) {
     let pose = null;
     for (let i = 0; i < steps.length; i++) {
       if (this.stopRequested) return { ok: false, stopped: true, index: i, pose: pose || await getAgentPose(this.bridge) };
@@ -296,17 +315,38 @@ class Navigator {
       }
 
       const deadline = Date.now() + (this.safe ? SAFE_WAIT_MS : 0);
-      for (;;) {
-        pose = await getAgentPose(this.bridge);
+      for (let first = true; ; first = false) {
+        if (first && this.vision) {
+          const center = aheadOnPath(ahead, i, this.vision.radius, step.expect);
+          [pose] = await Promise.all([getAgentPose(this.bridge), this.vision.look(center, step.expect).catch(() => null)]);
+        } else {
+          pose = await getAgentPose(this.bridge);
+        }
         if (samePose(pose, step.expect) || Date.now() >= deadline) break;
         await sleep(SAFE_POLL_MS);
       }
       this.broadcast({ type: 'agent', position: { x: pose.x, y: pose.y, z: pose.z }, yRot: pose.yRot });
       this.agentMoved(pose);
+      if (this.vision) this.vision.robotAt(pose);
       if (!samePose(pose, step.expect)) {
         return {
           ok: false, index: i, step, pose,
           reason: `after "${step.command}" the agent is at ${describePose(pose)}, expected ${describePose(step.expect)}`,
+        };
+      }
+      // Something solid that Vision just saw where the rest of the plan goes. Only what was just
+      // looked at counts: older map knowledge may be stale, and the plan was made with it anyway.
+      const box = this.vision && this.vision.last;
+      const inView = ([x, y, z]) => box && box.center && Math.max(Math.abs(x - box.center.x), Math.abs(y - box.center.y),
+        Math.abs(z - box.center.z)) <= box.radius;
+      // Only the very next cell: the robot keeps going until it is right in front of the obstacle.
+      const next = ahead.slice(i + 1).findIndex((s) => s.enters);
+      if (next !== -1 && inView(ahead[i + 1 + next].enters) && this.world.state(...ahead[i + 1 + next].enters) === 'solid') {
+        const blocked = ahead[i + 1 + next];
+        const [x, y, z] = blocked.enters;
+        return {
+          ok: false, seenBlocked: true, index: i + 1 + next, step: blocked, pose,
+          reason: `${this.world.get(x, y, z) || 'something solid'} is in the way ahead, at ${x} ${y} ${z}`,
         };
       }
     }

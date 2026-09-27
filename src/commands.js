@@ -26,6 +26,7 @@ const HASH = [
   ['pathsafe', 'on|off', 'Safe mode: wait up to 2s for the agent after each step before calling it a failure.'],
   ['pathstop', '', 'Stop a running walk after the current step.'],
   ['wonder', 'off|on|always', 'Switch wondering: the robot acting on its own when idle.'],
+  ['map', '[forget]', 'How much of this world the robot has mapped; "forget" wipes its map.'],
   ['world', '[new name]', 'Show which world Ptolemy thinks it\'s in, or rename it.'],
   ['area', 'list | add <name> x1 y1 z1 x2 y2 z2 | remove <name>', 'Named areas of this world, by two opposite corners.'],
   ['boundary', '<name> x1 x2 y1 y2 z1 z2', 'Add a named area with the coordinates given as ranges.'],

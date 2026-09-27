@@ -110,6 +110,27 @@ const SCHEMA = [
   },
   {
     tab: 'robot',
+    group: 'Map and vision',
+    help: 'Everything the robot sees goes into its map of the world, kept on disk. These ranges decide how much it looks '
+      + 'at as it goes, and how much of the map is shown or told.',
+    fields: [
+      { key: 'vision.radius', label: 'Vision radius', default: 1, min: 1, max: 3, step: 1,
+        help: 'A cube of blocks the robot looks at after every step and action (1 = 3x3x3). While walking it sits that far '
+          + 'ahead on the path, so the robot sees what it is about to walk into. It rides along with the position check the '
+          + 'robot does anyway, so it costs no extra time up to 1 (27 blocks); 2 (125 blocks) needs a second round trip.' },
+      { key: 'vision.entityRadius', label: 'Vision radius for entities', default: 9, min: 0, max: 48, step: 1,
+        help: 'Where the mobs, animals, players and items within this many blocks are, looked up with every Vision look '
+          + '(one command, since each one is identified only once). 0 turns it off.' },
+      { key: 'vision.idleSeconds', label: 'Look around when idle every (seconds)', default: 2, min: 0, max: 60, step: 1,
+        help: 'Vision also looks around while the robot is doing nothing, so the Nanny Cam stays live. 0: only after steps '
+          + 'and actions.' },
+      { key: 'awareness.radius', label: 'Awareness radius', default: 3, min: 1, max: 15, step: 1,
+        help: 'The part of the map around the robot that counts as what it is aware of (3 = 7x7x7), as opposed to the '
+          + 'whole map it keeps. The Nanny Cam\'s Awareness filter shows it.' },
+    ],
+  },
+  {
+    tab: 'robot',
     group: 'Path planning',
     fields: [
       { key: 'path.turnCost', label: 'Cost of a turn', default: 1, min: 0, max: 100, step: 0.5 },

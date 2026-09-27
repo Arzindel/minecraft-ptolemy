@@ -112,7 +112,7 @@ const POSITION = {
 /**
  * @param {object} deps
  * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
- * @param {import('../agent/world').WorldKnowledge} deps.world
+ * @param {import('../world/map').WorldMap} deps.world
  * @param {import('../agent/navigator').Navigator} deps.navigator
  * @param {import('../settings').Settings} deps.settings
  * @param {(radius: number, opts?: object) => Promise<object|null>} deps.scan
