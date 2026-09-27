@@ -290,7 +290,8 @@ class Navigator {
 
   /** Method 1: scan the unseen cells of the five tubes between the robot and the goal. */
   async _scanCorridor(pose, goal) {
-    const cells = corridorCells(pose, goal, CORRIDOR_RADIUS).filter((c) => this.world.state(...c) === 'unknown');
+    // Unverified cells too: "clear" by the ground survey may still be leaves, which matter when flying.
+    const cells = corridorCells(pose, goal, CORRIDOR_RADIUS).filter((c) => !this.world.verified(...c));
     if (cells.length) await checkCells(this.bridge, this.world, cells);
     this.log(`Scanned a corridor between here and there: ${cells.length} unseen cells in five tubes of radius ${CORRIDOR_RADIUS}.`);
   }

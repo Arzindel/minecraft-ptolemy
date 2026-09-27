@@ -150,14 +150,14 @@ function corridorCells(a, b, radius = 2) {
   return [...cells.values()];
 }
 
-/** The cells of a cube around `center` that aren't on the map yet. */
+/** The cells of a cube around `center` whose block hasn't been seen (unknown, or only "clear"). */
 function unknownAround(world, center, radius) {
   const cells = [];
   for (let dy = -radius; dy <= radius; dy++) {
     for (let dz = -radius; dz <= radius; dz++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const c = [center.x + dx, center.y + dy, center.z + dz];
-        if (world.state(...c) === 'unknown') cells.push(c);
+        if (!world.verified(...c)) cells.push(c);
       }
     }
   }
