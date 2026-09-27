@@ -148,7 +148,9 @@ class Navigator {
       + `(up to ${retries} retries and ${maxRescans} rescans of radius ${radius}).`);
     // A trip between two places under open sky stays on the surface: unseen cells below the measured
     // ground are planned as solid (see planPath's `underground`).
-    const overGround = how === 'surface' ? await this._surveyWay(pose, goal) : false;
+    // (An end under a roof is fine: the cells around it were scanned, and known cells beat guesses.)
+    if (how === 'surface') await this._surveyWay(pose, goal);
+    const overGround = how === 'surface';
 
     for (;;) {
       // A target that turned out to be solid once seen means "go next to it".
@@ -173,15 +175,21 @@ class Navigator {
       // with what they turned out to be. Cheap: one command per cell, all in one go.
       const unseen = (st) => st.enters && (how === 'rescan' ? st.unknown : !this.world.verified(...st.enters));
       if (how !== 'rescan' && checks < MAX_CHECKS) {
-        const doubtful = plan.steps.filter(unseen).map((st) => st.enters);
+        // The cells the path goes through, and the ones beside and below them that hold the robot up
+        // there (the plan may have leaned on a guess: a wall or a bank that isn't really there).
+        const doubtful = [];
+        for (const st of plan.steps) {
+          if (!st.enters) continue;
+          for (const c of [st.enters, ...leanedOn(st.enters)]) if (!this.world.verified(...c)) doubtful.push(c);
+        }
         if (doubtful.length) {
           checks++;
           const n = await checkCells(this.bridge, this.world, doubtful);
           const blocked = plan.steps.filter((st) => st.enters && this.world.state(...st.enters) === 'solid');
-          this.log(`Checking the path: looked at the ${n} unseen cells it goes through (${checks}/${MAX_CHECKS}): `
-            + `${blocked.length ? `${blocked.length} are in the way, planning again` : 'all clear'}.`);
-          // Only a path that turned out blocked needs planning again; a clear one is walked as it is.
-          if (blocked.length) continue;
+          this.log(`Checking the path: looked at ${n} unseen cells on and around it (${checks}/${MAX_CHECKS})`
+            + `${blocked.length ? `, ${blocked.length} of them in the way` : ''}; planning again with what they are.`);
+          // Walk only a plan that comes back entirely seen: what was checked may change what's cheapest.
+          continue;
         }
       }
 
@@ -471,6 +479,12 @@ class Navigator {
       + (plan.approximate ? ' (a quick estimate: every route was expensive, so it may not be the cheapest)' : '')
       + `\n  ${summarizeSteps(plan.steps)}\n  Run ${fly ? '#flypathwalk' : '#pathwalk'} to walk it.`;
   }
+}
+
+/** The cells that can hold the robot up in `cell`: the six touching it and the four below its edges. */
+function leanedOn([x, y, z]) {
+  return [[x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1],
+    [x + 1, y - 1, z], [x - 1, y - 1, z], [x, y - 1, z + 1], [x, y - 1, z - 1]];
 }
 
 function describeGoal(goal) {
