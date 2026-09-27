@@ -1,5 +1,6 @@
 'use strict';
 
+const path = require('path');
 const WebSocket = require('ws');
 const { createToolbox, sayInChat, isOwnChat } = require('../tools');
 const { Pilot } = require('../llm/pilot');
@@ -22,7 +23,7 @@ const POSITION_POLL_MS = 4000;
  */
 class Brain {
   /**
-   * @param {object} deps  bridge, settings, navigator, world (WorldKnowledge), scan, lookForEntities, sight(), log, broadcast
+   * @param {object} deps  bridge, settings, navigator, world (WorldMap), vision, scan, lookForEntities, sight(), log, broadcast
    */
   constructor(deps) {
     Object.assign(this, deps);
@@ -42,7 +43,10 @@ class Brain {
       sight: deps.sight,
       worlds: this.worlds,
       notify: (text) => this.pilot.notice(text),
-      activity: () => this.pilot.touch(),
+      activity: () => {
+        this.pilot.touch();
+        if (deps.vision) deps.vision.soon(); // look around after every action
+      },
       setWonder: (mode) => this.wonder.setMode(mode),
     });
     // Commands tab: editable descriptions of the tools (what the model reads), # and / commands.
@@ -50,7 +54,9 @@ class Brain {
     this.toolbox.setDescriber((t) => this.commands.toolDescription(t.name, t.description));
     this.commands.on('change', () => this.broadcast(this.commands.message()));
 
-    this.pilot = new Pilot({ settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands });
+    this.pilot = new Pilot({
+      settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands, map: deps.world,
+    });
     this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds });
     this.mcp = new McpServer({ toolbox: this.toolbox, settings, bridge, worlds: this.worlds, commands: this.commands });
 
@@ -71,7 +77,7 @@ class Brain {
       const previous = this._openWorld;
       this._openWorld = memory;
       if (previous !== memory) {
-        if (previous) deps.world.clear(); // what the robot saw belongs to the old world
+        deps.world.open(path.join(memory.dir, 'map')); // each world has its own map
         settings.setWorld(memory);
         this.pilot.switchWorld(previous, memory);
       } else if (settings.world) {

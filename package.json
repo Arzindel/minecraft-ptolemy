@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node --watch src/index.js --watched",
     "start:once": "node src/index.js",
-    "mcp": "node src/mcp/stdio.js"
+    "mcp": "node src/mcp/stdio.js",
+    "bench": "node bench/pathfinding.js",
+    "fake-game": "node bench/fake-game.js"
   },
   "engines": {
     "node": ">=18.11"

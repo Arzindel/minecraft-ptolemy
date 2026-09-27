@@ -89,7 +89,6 @@ const SCHEMA = [
       + 'Think "how many ground steps would it rather walk than go through this". #flypathfind ignores these.',
     fields: [
       { key: 'cost.ground', label: 'Ground (solid block below)', default: 1 },
-      { key: 'cost.water', label: 'Water (the cell itself)', default: 5 },
       { key: 'cost.wall', label: 'Wall (beside, sharing a face)', default: 5 },
       { key: 'cost.groundEdge', label: 'Ground edge (below, sharing an edge)', default: 3 },
       { key: 'cost.wallDiagonal', label: 'Wall edge (level, sharing an edge)', default: 8 },
@@ -110,6 +109,28 @@ const SCHEMA = [
   },
   {
     tab: 'robot',
+    group: 'Map and vision',
+    help: 'Everything the robot sees goes into its map of the world, kept on disk. These ranges decide how much it looks '
+      + 'at as it goes, and how much of the map is shown or told.',
+    fields: [
+      { key: 'vision.radius', label: 'Vision radius', default: 1, min: 1, max: 3, step: 1,
+        help: 'A cube of blocks the robot looks at after every step and action (1 = 3x3x3). While walking it sits that far '
+          + 'ahead on the path, so the robot sees what it is about to walk into. It rides along with the position check the '
+          + 'robot does anyway, so it costs no extra time up to 1 (27 blocks); 2 (125 blocks) needs a second round trip.' },
+      { key: 'vision.entityRadius', label: 'Vision radius for entities', default: 9, min: 0, max: 48, step: 1,
+        help: 'Where the mobs, animals, players and items within this many blocks are, looked up with every Vision look '
+          + '(one command, since each one is identified only once). 0 turns it off.' },
+      { key: 'vision.idleSeconds', label: 'Look around when idle every (seconds)', default: 2, min: 0, max: 60, step: 1,
+        help: 'Vision also looks around while the robot is doing nothing, so the Nanny Cam stays live. 0: only after steps '
+          + 'and actions.' },
+      { key: 'awareness.radius', label: 'Awareness radius', default: 3, min: 0, max: 8, step: 1,
+        help: 'The part of the map around the robot it is aware of (3 = 7x7x7), as opposed to the whole map it keeps: the '
+          + 'model is told about it with every request (what is next to the robot, the ground, the less common blocks), so '
+          + 'it rarely needs to scan. Bigger means a longer prompt. 0: off. The Nanny Cam\'s Awareness filter shows it.' },
+    ],
+  },
+  {
+    tab: 'robot',
     group: 'Path planning',
     fields: [
       { key: 'path.turnCost', label: 'Cost of a turn', default: 1, min: 0, max: 100, step: 0.5 },
@@ -118,9 +139,12 @@ const SCHEMA = [
       { key: 'path.scanRadius', label: 'Rescan radius for #pathfindwalk', default: 7, min: 1, max: 15, step: 1,
         help: 'How far around the robot to scan when walking into unknown territory (7 = 15x15x15).' },
       { key: 'path.retries', label: 'Retries for #pathfindwalk', default: 3, min: 0, max: 50, step: 1 },
+      { key: 'path.surveyWidth', label: 'Ground survey half-width', default: 3, min: 0, max: 10, step: 1,
+        help: 'Before walking somewhere, the robot measures the ground along the way with gettopsolidblock (one command per '
+          + 'column): a strip this many blocks either side of the straight line (3 = 7 wide).' },
       { key: 'path.finalMultiplier', label: 'Final spot multiplier (approximate go_to)', default: 10, min: 0, max: 1000, step: 1,
         help: 'Where an approximate go_to stops costs this many times the walking cost of standing there: 10 on ground, 50 '
-          + 'in water or on a wall, 400 in midair with the default costs. So it would rather stop a little further away, on '
+          + 'on a wall, 400 in midair with the default costs. So it would rather stop a little further away, on '
           + 'solid ground, than right next to the target in the air.' },
       { key: 'path.nearSide', label: 'Approximate stop: beside the target', default: 10, min: 0, max: 1000, step: 1 },
       { key: 'path.nearDiagonal', label: 'Approximate stop: diagonal to the target', default: 15, min: 0, max: 1000, step: 1 },
@@ -181,7 +205,7 @@ class Settings extends EventEmitter {
     return this.values[key];
   }
 
-  /** Walking-path support costs as { ground, water, ... }. */
+  /** Walking-path support costs as { ground, wall, ... }. */
   costs() {
     const out = {};
     for (const key of FIELDS.keys()) if (key.startsWith('cost.')) out[key.slice(5)] = this.get(key);

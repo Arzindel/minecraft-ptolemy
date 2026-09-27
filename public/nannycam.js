@@ -1,7 +1,9 @@
 'use strict';
 
-// Nanny Cam: a WebGL2 view of the robot's Sight. Every block is the same unit cube drawn with
-// instancing (one draw call per pass), so tens of thousands of blocks are cheap on any GPU.
+// Nanny Cam: a WebGL2 view of the robot's map around it (everything it has seen, up to 30 blocks
+// away), kept live by Vision. Every block is the same unit cube drawn with instancing (one draw
+// call per pass), so tens of thousands of blocks are cheap on any GPU. The filter buttons keep
+// the whole map on screen but grey out what's outside the robot's Awareness or its last Vision look.
 /* global blockRgb, isTranslucent */
 
 (() => {
@@ -16,6 +18,7 @@
   const scanSize = $('cam-scan-size');
   const scanButton = $('cam-scan');
   const scanWhat = $('cam-scan-what');
+  const filterButtons = [...document.querySelectorAll('#cam-filter button')];
 
   const AGENT_COLOR = [0.95, 0.76, 0.2, 1];
   // Walking paths are cyan, flight paths magenta; walked cells and finished trails fade.
@@ -184,7 +187,13 @@
 
   // --- Scene state -------------------------------------------------------------
 
-  let sight = null;
+  let known = new Map(); // "x,y,z" -> block name: the map around the robot, without air
+  let hasMap = false;
+  let mapTime = null;
+  let agentYRot = 0;
+  let filter = 'map'; // 'map' | 'awareness' | 'vision': outside it, blocks are drawn in grey
+  let awarenessRadius = 3;
+  let visionBox = null; // { center: {x, y, z}, radius, time } of the latest Vision look
   // Planned routes by kind: { cells: [[x, y, z], ...] starting at the robot, trail: already walked }
   const paths = { walk: { cells: [], trail: false }, fly: { cells: [], trail: false } };
   let agentPos = [0, 0, 0];
@@ -201,19 +210,49 @@
     return { 0: [0, 0, 1], 90: [-1, 0, 0], 180: [0, 0, -1], 270: [1, 0, 0] }[snapped];
   }
 
+  /** Is a cell inside what the filter highlights? (Always, for the whole map.) */
+  function highlighted(x, y, z) {
+    if (filter === 'map') return true;
+    if (filter === 'awareness') {
+      const [ax, ay, az] = agentPos;
+      return Math.max(Math.abs(x - ax), Math.abs(y - ay), Math.abs(z - az)) <= awarenessRadius;
+    }
+    if (!visionBox) return false;
+    const { center: c, radius: r } = visionBox;
+    return Math.max(Math.abs(x - c.x), Math.abs(y - c.y), Math.abs(z - c.z)) <= r;
+  }
+
+  /** A block's colour, or a dim grey of it outside the highlight. */
+  function colorOf(name, x, y, z) {
+    const [r, g, b] = blockRgb(name);
+    if (highlighted(x, y, z)) return [r, g, b];
+    const grey = 0.12 + 0.45 * (0.3 * r + 0.59 * g + 0.11 * b);
+    return [grey, grey, grey];
+  }
+
+  // Rebuilding is throttled to once per frame: Vision can send updates many times a second.
+  let rebuildQueued = false;
   function rebuild() {
-    if (!sight) return;
+    if (rebuildQueued) return;
+    rebuildQueued = true;
+    requestAnimationFrame(() => {
+      rebuildQueued = false;
+      rebuildNow();
+    });
+  }
+
+  function rebuildNow() {
+    if (!hasMap) return;
     tooltip.hidden = true;
     const radius = Number(radiusInput.value);
     const [ax, ay, az] = agentPos;
 
     // Blocks within the zoom radius (a cube around the robot, measured in blocks).
     const within = new Map();
-    const { palette, blocks } = sight;
-    for (let i = 0; i < blocks.length; i += 4) {
-      const x = blocks[i]; const y = blocks[i + 1]; const z = blocks[i + 2];
+    for (const [key, name] of known) {
+      const [x, y, z] = key.split(',').map(Number);
       if (Math.max(Math.abs(x - ax), Math.abs(y - ay), Math.abs(z - az)) > radius) continue;
-      within.set(`${x},${y},${z}`, palette[blocks[i + 3]]);
+      within.set(key, name);
     }
 
     // Skip blocks whose six neighbours are all solid: they can't be seen.
@@ -230,14 +269,14 @@
       });
       if (hidden) continue;
       visible.set(key, name);
-      const [r, g, b] = blockRgb(name);
+      const [r, g, b] = colorOf(name, x, y, z);
       (see ? translucent : opaque).push(x, y, z, 1, r, g, b, see ? TRANSLUCENT_ALPHA : 1);
     }
     upload(batches.opaque, opaque);
     upload(batches.translucent, translucent);
 
     // The robot: a body plus a small "nose" on the side it's facing.
-    const [fx, , fz] = facingVector(sight.agent.yRot);
+    const [fx, , fz] = facingVector(agentYRot);
     upload(batches.agent, [
       ax + 0.15, ay + 0.1, az + 0.15, 0.7, ...AGENT_COLOR,
       ax + 0.35 + fx * 0.5, ay + 0.45, az + 0.35 + fz * 0.5, 0.3, ...AGENT_COLOR.map((c, i) => (i < 3 ? c * 0.6 : c)),
@@ -300,10 +339,10 @@
     }
     upload(batches.entities, bodies);
 
-    info.textContent = `${sight.scanned.toLocaleString()} blocks scanned at ${ax} ${ay} ${az}, `
-      + `facing ${FACING_NAMES[(((Math.round(sight.agent.yRot / 90) % 4) + 4) % 4)]} · `
-      + `${visible.size.toLocaleString()} drawn · `
-      + `${new Date(sight.time).toLocaleTimeString([], { hour12: false })}`
+    const clock = (t) => new Date(t).toLocaleTimeString([], { hour12: false });
+    info.textContent = `Robot at ${ax} ${ay} ${az}, facing ${FACING_NAMES[(((Math.round(agentYRot / 90) % 4) + 4) % 4)]} · `
+      + `${known.size.toLocaleString()} blocks on the map nearby, ${visible.size.toLocaleString()} drawn`
+      + (visionBox ? ` · Vision ${clock(visionBox.time)}` : mapTime ? ` · ${clock(mapTime)}` : '')
       + (seen ? ` · ${seen.list.length} entities within ${seen.radius} (${shown} in view) at `
         + `${new Date(seen.time).toLocaleTimeString([], { hour12: false })}` : '');
     requestDraw();
@@ -346,7 +385,7 @@
     gl.viewport(0, 0, width, height);
     gl.clearColor(0.07, 0.075, 0.085, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (!sight) return;
+    if (!hasMap) return;
 
     const { eye, target } = eyePosition();
     viewProj = mat4.multiply(
@@ -464,25 +503,55 @@
     info.textContent = 'Scanning...';
   });
 
-  document.addEventListener('ptolemy:sight', (ev) => {
-    sight = ev.detail;
-    const { x, y, z } = sight.agent.position;
+  /** Put the robot somewhere (and show the view, even with nothing on the map yet). */
+  function placeAgent({ x, y, z }, yRot) {
     agentPos = [x, y, z];
-    empty.hidden = true;
+    if (yRot !== undefined) agentYRot = yRot;
+    hasMap = true;
+    empty.hidden = known.size > 0;
+  }
+
+  // The map around the robot, whole (on page load, and when the robot has gone far).
+  document.addEventListener('ptolemy:map', (ev) => {
+    const { palette, blocks, agent, time } = ev.detail;
+    known = new Map();
+    for (let i = 0; i < blocks.length; i += 4) known.set(`${blocks[i]},${blocks[i + 1]},${blocks[i + 2]}`, palette[blocks[i + 3]]);
+    mapTime = time;
+    placeAgent(agent.position, agent.yRot);
     rebuild();
   });
 
-  // Entities can come before any block scan: then the robot's pose comes with them, and no blocks.
-  document.addEventListener('ptolemy:entities', (ev) => {
-    seen = ev.detail;
-    if (!sight) {
-      const { x, y, z, yRot } = seen.center;
-      sight = { agent: { position: { x, y, z }, yRot }, scanned: 0, time: seen.time, palette: [], blocks: [] };
-      agentPos = [x, y, z];
-      empty.hidden = true;
+  // What changed on the map (Vision, a scan, a broken block). "Air" means a cell turned out empty.
+  document.addEventListener('ptolemy:mapCells', (ev) => {
+    const { palette, blocks } = ev.detail;
+    for (let i = 0; i < blocks.length; i += 4) {
+      const key = `${blocks[i]},${blocks[i + 1]},${blocks[i + 2]}`;
+      const name = palette[blocks[i + 3]];
+      if (name === 'Air') known.delete(key);
+      else known.set(key, name);
     }
+    mapTime = Date.now();
+    if (hasMap) empty.hidden = known.size > 0;
     rebuild();
   });
+
+  document.addEventListener('ptolemy:vision', (ev) => {
+    visionBox = ev.detail;
+    rebuild();
+  });
+
+  // Entities can come before any map: then the robot's pose comes with them.
+  document.addEventListener('ptolemy:entities', (ev) => {
+    seen = ev.detail;
+    if (!hasMap) placeAgent(seen.center, seen.center.yRot);
+    rebuild();
+  });
+
+  filterButtons.forEach((button) => button.addEventListener('click', () => {
+    filter = button.dataset.filter;
+    filterButtons.forEach((b) => b.setAttribute('aria-checked', String(b === button)));
+    rebuild();
+  }));
 
   // Scan radius: starts at the configured #scan default, shows the cube it covers.
   const showScanSize = () => {
@@ -493,6 +562,8 @@
   let scanRadiusTouched = false;
   scanRadius.addEventListener('change', () => { scanRadiusTouched = true; });
   document.addEventListener('ptolemy:settings', (ev) => {
+    awarenessRadius = ev.detail.values['awareness.radius'] ?? awarenessRadius;
+    if (filter === 'awareness') rebuild();
     if (scanRadiusTouched) return;
     scanRadius.value = ev.detail.values['scan.radius'];
     showScanSize();
@@ -507,10 +578,7 @@
 
   // The robot moved (e.g. while walking a path): move its marker and the camera with it.
   document.addEventListener('ptolemy:agent', (ev) => {
-    if (!sight) return;
-    const { x, y, z } = ev.detail.position;
-    agentPos = [x, y, z];
-    sight.agent = { ...sight.agent, position: ev.detail.position, yRot: ev.detail.yRot };
+    placeAgent(ev.detail.position, ev.detail.yRot);
     rebuild();
   });
 

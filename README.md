@@ -36,6 +36,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
 | Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
 | Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
+| The map: everything the robot sees, kept on disk per world; Vision keeps it live | ✅ New, needs real-world testing |
 | Seeing mobs, animals, players and dropped items (`scan` / `#scan` with `entities`, drawn in the Nanny Cam) | ✅ New, needs real-world testing |
 | Automatic mode: LLM control (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic, any OpenAI-compatible server) | ✅ New, needs real-world testing |
 | Endpoint tests (connection, model, tool calling) | ✅ New |
@@ -103,7 +104,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
-| `#pathfindwalk <x y z \| @p> [scan=7] [retries=3]` | Plan and walk, rescanning when entering unknown territory and re-planning when something is in the way |
+| `#pathfindwalk <x y z \| @p> [scan=7] [retries=3] [method=...]` | Plan and walk. See [Finding the way](#finding-the-way) for the methods; `go_to` uses the default |
 | `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
 | `#pathsafe on\|off` | On (default): if the agent isn't where it should be after a step, keep checking for up to 2s before calling it a failure. That costs nothing when steps succeed straight away. Off: check once |
 | `#pathstop` | Stop a running walk after the current step |
@@ -114,6 +115,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#ask <request>` | Give the LLM a request, as if typed in the Automatic tab |
 | `#wonder off\|on\|always` | Switch wondering (see [Wondering](#wondering)) |
 | `#world` / `#world <name>` | Show which world Ptolemy thinks it's in, or rename it |
+| `#map` / `#map forget` | How much of this world the robot has mapped, or wipe its map. See [The map and Vision](#the-map-and-vision) |
 | `#area list` / `#area add <name> x1 y1 z1 x2 y2 z2` / `#area remove <name>` | Named areas of this world (two opposite corners) |
 | `#boundary <name> x1 x2 y1 y2 z1 z2` | The same as `#area add`, with the coordinates as ranges |
 | `#help` | Show this list |
@@ -162,6 +164,36 @@ scan (29,791 blocks) takes about 30 seconds.
 is up the page and `[ ]` marks the agent's cell. Click the result to see every cell with its world
 and relative coordinates.
 
+## The map and Vision
+
+Everything the robot sees goes into its **map** of the world, and stays there:
+
+- **Storage:** Minecraft's own grid. The map is kept in sub-chunks of 16×16×16 blocks (8 KB each in
+  memory), one gzipped file per chunk column in `data/worlds/<id>/map/`, read when something first
+  needs it. Only recently used columns stay in memory. A column the robot has walked past takes about
+  100 bytes on disk. `#map` says how much is mapped; `#map forget` wipes it.
+- **Vision** is the robot's real-time look around: a small cube of blocks (the **Vision radius**,
+  1 = 3×3×3) and where the entities within the **Vision radius for entities** (9) are. It happens after
+  every step of a walk, after every tool call, and every couple of seconds while idle. Ptolemy
+  checks where the robot is after every step anyway, and Vision rides along in the same flight of
+  commands, so it costs no extra waiting: Bedrock answers the whole flight in about one round trip
+  (up to about 100 commands). While walking, the cube sits `radius` cells ahead on the path, so the
+  robot is on its inner edge and sees what it is about to walk into.
+- **Entities** are identified once: working out *what* an entity is takes a few round trips (see
+  [Seeing entities](#seeing-entities)), but each keeps its uniqueId, so Vision only asks where
+  everything is, and a new id is identified in the background.
+- **Awareness radius** (3): the part of the map around the robot it's aware of, as opposed to all it
+  has mapped. The LLM gets it with every request: the `[Now]` block has an "Around you" summary of
+  the map within that radius (what's next to the robot, the ground below, counts, where the less
+  common blocks are), which Vision keeps fresh, so the model rarely needs to scan just to see where
+  it is. It's one line while the map knows almost nothing there. 0 turns it off; a bigger radius
+  means a longer prompt. The Nanny Cam's Awareness filter shows it.
+- **The `scan` tool uses the map too:** up to radius 4 it looks at everything again (it may have
+  changed); further out, only at what the map doesn't know yet, and describes the rest from the map.
+  A second radius-8 scan of the same place costs 730 commands instead of 4,913.
+
+The ranges are under Configuration → Robot & paths → Map and vision.
+
 ## Pathfinding
 
 The agent flies like a 1×1×1 drone and can move through anything that isn't solid (air, water,
@@ -174,28 +206,31 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   (it looks better) and moves up and down without turning. A target sealed in by known solid blocks
   is refused straight away, and so is a robot boxed in by them (say, stuck inside a tree's leaves):
   the error says it has to break a block to get out.
-- **What the robot knows** is every scan it has made in this world, a newer scan overwriting what an
-  older one said (up to 200,000 cells, the oldest forgotten first; it all resets when another world
-  opens). Keeping older scans is what lets it walk around a big wall or hill: with only the latest
-  scan, it forgot the part of the wall it had already seen and went back and forth along it.
-- **Unseen cells are unknown**, neither air nor wall. The planner assumes it can walk through them:
-  an unseen cell costs a ground step plus the "unseen" penalty, whatever its height. `#pathfindwalk`
-  stops and rescans before entering one and re-plans with what's really there, so a cliff or a hill
-  just past the edge of Sight is found and handled as soon as the robot gets near. (An older version
-  guessed the terrain carried on flat, as last seen, and priced every unseen cell off that height as
-  flying. A target a few blocks higher or lower than the ground at the edge of Sight then looked like
-  a long flight, and the search gave up before finding any route.)
+- **What the robot knows** is its [map](#the-map-and-vision): every block it has seen in this world,
+  by scans and by Vision, kept on disk. Keeping everything is what lets it walk around a big wall or
+  hill: with only the latest scan, it forgot the part of the wall it had already seen and went back
+  and forth along it.
+- **Vision while walking:** after each step, Vision looks at the cells just ahead on the path in the
+  same flight as the position check. If something solid is now where the path goes (someone built a
+  wall, a door closed), the robot re-plans from the map before bumping into it.
+- **Unseen cells are unknown**, neither air nor wall. Far from anything measured, the planner assumes
+  it can walk through them: an unseen cell costs a ground step plus the "unseen" penalty, whatever its
+  height, and the robot looks before going in. On a trip over the surface (see
+  [Finding the way](#finding-the-way)), unseen cells near measured ground are guessed from it instead:
+  below the ground they count as solid, above it they're priced like seen cells. Otherwise unseen cells
+  priced as flat ground at any height were cheaper than the real, bumpy ground next to them, and the
+  planner tunnelled through riverbanks and floated along just outside what it had measured.
 - **`#pathfind` vs `#flypathfind`:** the fly version takes the shortest route through the air (every
-  move costs 1). The plain version follows the path of least resistance for something that walks,
-  swims and climbs. Entering a cell costs by its best known support, and a cell in water always
-  costs the water price. Read the costs as "how many ground steps would it rather walk than go
+  move costs 1). The plain version follows the path of least resistance for something that walks
+  and climbs. Entering a cell costs by its best known support. Water counts as air: robots are heavy,
+  so the robot walks along the bottom of rivers and lakes, and a lakebed step costs a ground step.
+  Read the costs as "how many ground steps would it rather walk than go
   through this". Defaults are below; they're all adjustable in the Configuration tab. Turns cost 1.
 
   | Support | Solid block | Cost |
   | --- | --- | --- |
   | Ground | directly below | 1 |
   | Ground edge | below, sharing an edge | 3 |
-  | Water | the cell itself is water | 5 |
   | Wall | beside, sharing a face | 5 |
   | Wall edge | level, sharing an edge | 8 |
   | Ground corner | below, sharing only a corner | 10 |
@@ -204,22 +239,64 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   | Ceiling corner | above, sharing only a corner | 20 |
   | Airborne | nothing around | 40 |
 
-  When every route is expensive (say, a target up in open air), the exact search gets a time budget
-  and then falls back to a greedier one. The plan says when it's such a quick estimate.
+  The search is A* with a small budget, then weighted A*: it trusts its distance estimate 2 times more
+  (then 3, then 8 if the budget runs out again), so the route is at most that many times dearer than
+  the best. Climbing and hugging walls cost more than the estimate assumes, so an exact search on a
+  60-block trip takes 1-3 seconds; weight 2 found the same routes in 0.05-0.2 s. The plan says when
+  it's such an estimate.
 - **Walking:** every step has an expected pose (position and facing). After each step Ptolemy runs
   `agent getposition`, and the walk stops at the first mismatch. With `#pathsafe on` it polls for up
   to 2 seconds first, in case moves turn out not to be instant.
-- **`#pathfindwalk`** scans first, then walks. Before entering unknown cells it stops, rescans and
-  re-plans. Those rescans are budgeted at ⌈2 × distance ÷ scan radius⌉ + 3, so a robot trying to get
-  into a closed box gives up. Since everything seen is kept, running it again carries on from where it
-  stopped (useful after a very long detour). When a step fails (someone closed the door), it marks that cell as
-  blocked, rescans and re-plans. That counts as a retry, and it hard-stops after `retries` failures.
+- **`#pathfindwalk`** looks first, plans, then walks; see [Finding the way](#finding-the-way). When a
+  step fails (someone closed the door), it marks that cell as blocked, rescans and re-plans. That
+  counts as a retry, and it hard-stops after `retries` failures.
+
 - **Stored paths:** walking and flight paths are stored separately (`#pathwalk` walks the one from
   `#pathfind`, `#flypathwalk` the one from `#flypathfind`). A stored path is only valid while the
   agent is at its start. It's dropped as soon as the agent moves (by hand, by a walk of the other
   path, or as seen by a scan), and it's used up once walked.
 - **Nanny Cam:** walking paths show as cyan beads and flight paths as magenta ones. They fade as the
   robot walks them, and a finished walk leaves a faded trail. The robot's marker follows it while it walks.
+
+### Finding the way
+
+`#pathfindwalk` and `go_to` pick a method (`method=` on `#pathfindwalk`; `auto` by default). They all
+follow one rule: **a plan is kept while what's learned only confirms it**, and planned again when
+something contradicts it: a cell it goes into turned out solid, or a step lost what would hold the
+robot up there (the wall it leaned on isn't there), or the whole way turned out much harder than
+planned. Vision while walking works the same way.
+
+- **`surface`** (the default when walking): first **measure the ground** between the robot and the
+  target with `gettopsolidblock x y z`, which answers with the first block below y that isn't air,
+  leaves or water, in one command per column: a strip 7 wide (Ground survey half-width: 3) all the way,
+  a few hundred commands in one go. What it looked straight through is marked "clear" on the map:
+  probably free, but it can't see leaves or water. An end with something solid over it is indoors or
+  underground (the survey only saw the roof), so the unseen cells around it are scanned too. Then
+  **plan**. Where the plan leaves the measured strip (a detour around a wall, say), measure those
+  columns too. Then **check the path**: `testforblock` on the unseen cells it goes through and the
+  ones that hold it up (usually a few hundred, a few flights). Unloaded chunks (`gettopsolidblock`
+  answers "No solid blocks under specified position") stay unknown.
+- **`corridor`** (the default when flying, and what `surface` switches to when there's no way over
+  the ground as measured, e.g. to a cave): first scan five tubes of radius 2 between the robot and
+  the target: straight up or down from each to the other's height, the two level lines that close
+  that rectangle, and the diagonal (a few thousand cells for 60 blocks, only the unseen ones). That
+  gives the plan something to work with from the start, covering the straight flight and the ways
+  around it above and below, and it works underground. Then it carries on as `lookahead`.
+- **`lookahead`**: before moving, plan through the unknown, then scan the unseen cells around the
+  spot where the plan first meets the unknown (a cube of radius 3). The spots alternate between the
+  robot's end of the plan and the target's end, so both sides fill in until they meet; a target in
+  the unknown gets looked around first. When a look finds the way blocked, that's likely a hill or a
+  mountain, not a lone wall, and every scan further into it would just find more of it: the ground
+  around it is measured (`gettopsolidblock`, 81 columns in one go), so the next plan goes over or
+  around it straight away (unless an end is under a roof, e.g. in a cave). Then the path is checked
+  like `surface` does (only the cells it goes through, when flying) and walked.
+- **`rescan`** (the old way): walk what's known, and at the edge of it
+  rescan a cube around the robot (the rescan radius, 7 = 3,375 blocks) and re-plan. Rescans are
+  budgeted at ⌈2 × distance ÷ scan radius⌉ + 3, so a robot trying to get into a closed box gives up.
+  It is also what the others fall back to when checking doesn't settle.
+
+Everything seen is kept, so running any of them again carries on from where it stopped. `npm run
+bench` compares the methods on simulated trips.
 
 ## Automatic mode (LLM)
 
@@ -236,7 +313,8 @@ makes it forget everything said so far.
   or the tools. Servers that cache the start of a prompt (LM Studio, llama.cpp, Anthropic) can then
   skip re-reading it, which is where most of the time goes with long prompts.
 - **A fresh `[Now]` block** is added to the newest message on every call. It says where the robot and
-  the player are, the world's memory, and where the request came from. It's left out of older
+  the player are, what the map knows right around the robot ("Around you", the Awareness radius), the
+  world's memory, and where the request came from. It's left out of older
   messages, so the model sees one current copy, not a pile of outdated ones.
 - **Only the newest snapshot of each kind** (`scan`, `get_status`, `get_memory`, `todo_write`) is sent
   in full. Older ones are replaced by a one-line note. A scan's blocks and entities count separately, so
@@ -304,8 +382,8 @@ world − robot. The other facings are that, rotated (`src/agent/frame.js`).
   - diagonal: 15
   - 2 blocks away: 20
   - per block of height difference: 10
-  - **plus the final spot multiplier (10) × the walking cost of standing there:** 10 on ground, 50 in
-    water or clinging to a wall, 400 in midair with the default costs.
+  - **plus the final spot multiplier (10) × the walking cost of standing there:** 10 on ground, 50
+    clinging to a wall, 400 in midair with the default costs.
 
   So it would rather walk a few more blocks and stand on solid ground than stop beside the target in
   the air.
@@ -410,7 +488,7 @@ report what really happened, because the game says "success" even when the robot
 | Tool | What it does |
 | --- | --- |
 | `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
-| `scan` | `what: "blocks"`: scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
+| `scan` | `what: "blocks"`: look at a cube around the robot (fresh up to radius 4, then only what the map doesn't know; see [The map and Vision](#the-map-and-vision)) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
 | `get_blocks` | The block at up to 64 positions, relative or world |
 | `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |
@@ -586,22 +664,25 @@ everything back (endpoints and keys stay).
 
 ## Nanny Cam
 
-The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
-and no libraries:
+The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's [map](#the-map-and-vision)
+around it, up to 30 blocks away, in 3D with WebGL2, using the GPU and no libraries. Vision keeps it live:
+new blocks and entities appear as the robot looks around.
 
+- **Map / Awareness / Vision** pick what's highlighted. All three draw the whole map; Awareness and
+  Vision colour only what's inside the Awareness radius or the cube Vision looked at last (which runs
+  ahead of the robot while it walks), and draw the rest in grey.
 - **Scan** runs a scan of the chosen radius, same as `#scan`: blocks, entities, or both (the picker next to it).
-  Every new block scan replaces Sight here (the pathfinder remembers older scans too; the Nanny Cam only
-  draws the latest); every look for entities replaces the entities shown.
+  Scanned blocks go onto the map; every look for entities replaces the entities shown.
 - **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
   **double-click** to reset.
-- **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
-  or underground. Cut faces are drawn, so you can see inside walls.
+- **Zoom** limits the view to the blocks within that many blocks of the robot (up to 30), which helps
+  indoors or underground. Cut faces are drawn, so you can see inside walls.
 - **Hover** over a block to see its name and coordinates.
 - Named areas from World Memory are outlined with dotted lines, one colour each.
 - The robot is the yellow block. Its darker nose points the way it's facing.
-- Entities, where they were at the last look: hostile mobs are red boxes, other mobs white, players
-  blue two-block columns, dropped items small purple boxes, and anything unidentified grey. Hover over
-  one to see what it is. They don't move until the next look.
+- Entities, where they were at the last look (Vision looks every couple of seconds): hostile mobs are
+  red boxes, other mobs white, players blue two-block columns, dropped items small purple boxes, and
+  anything unidentified grey. Hover over one to see what it is.
 
 Air isn't drawn, and neither are blocks completely enclosed by other blocks. Water, glass and ice
 are drawn see-through, as is everything the robot can move through (plants, flowers, torches...).
@@ -657,8 +738,9 @@ src/
   web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
   settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
   commands.js            the Commands tab: tool, # and / command descriptions, and edits to them
-  agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator),
+  agent/                 scanning, Vision, pose, pathfinding, walking (Navigator), entities,
                          and frame.js: the robot-relative coordinates the model sees
+  world/map.js           the map: every block seen, in 16x16x16 sub-chunks, saved per world
   world/manager.js       which world is open (the scoreboard marker), per-world folders
   world/memory.js        World Memory: areas, todos, thoughts, notes, journal, conversation
   tools/index.js         the robot's tools, shared by the LLM and MCP
@@ -674,6 +756,10 @@ public/
   index.html, style.css, app.js   the WebUI
   dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js   the tabs and panels
   blocks.js              block colours / solidity
+bench/
+  sim.js                 a simulated world and a fake game answering Ptolemy's commands
+  pathfinding.js         the pathfinding benchmark (npm run bench)
+  fake-game.js           try the WebUI without Minecraft (npm run fake-game, after npm start)
 abandoned-minimap-project/        old prototype, kept for reference only
 ```
 

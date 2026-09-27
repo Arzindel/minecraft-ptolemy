@@ -4,6 +4,8 @@ const { FORWARD, turnLeft, turnRight, getAgentPose } = require('../agent/pose');
 const { isSolid } = require('../../public/blocks');
 const { Frame } = require('../agent/frame');
 const players = require('../agent/players');
+const { CLEAR } = require('../world/map');
+const { checkCells, unknownAround } = require('../agent/survey');
 const entities = require('../agent/entities');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
@@ -16,6 +18,8 @@ const MAX_MOVE = 64;
 const MAX_BLOCKS_QUERY = 64;
 const MAX_WAIT_S = 60;
 const MAX_SCAN_RADIUS = 15;
+// The scan tool looks at everything up to this radius again; further out, only what isn't on the map.
+const FRESH_SCAN_RADIUS = 4;
 const LIST_ENTITIES = 30;
 // After destroy/place, how long to keep checking whether the block changed.
 const ACT_POLLS = 6;
@@ -112,7 +116,7 @@ const POSITION = {
 /**
  * @param {object} deps
  * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
- * @param {import('../agent/world').WorldKnowledge} deps.world
+ * @param {import('../world/map').WorldMap} deps.world
  * @param {import('../agent/navigator').Navigator} deps.navigator
  * @param {import('../settings').Settings} deps.settings
  * @param {(radius: number, opts?: object) => Promise<object|null>} deps.scan
@@ -277,6 +281,25 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
 
   // --- Looking around ---------------------------------------------------------
 
+  /**
+   * Blocks around the robot, summarized. Up to FRESH_SCAN_RADIUS everything is scanned again (it may
+   * have changed); beyond it, only what the map doesn't know yet, and the rest comes from the map.
+   */
+  async function lookAround(r) {
+    const mode = settings.get('llm.coordinates');
+    const fresh = await scan(Math.min(r, FRESH_SCAN_RADIUS), { quiet: true });
+    if (!fresh) throw new Error('the scan failed (see the console)');
+    if (r <= FRESH_SCAN_RADIUS) return summarizeScan(fresh, mode);
+    const { x, y, z } = fresh.agent.position;
+    const pose = { x, y, z, yRot: fresh.agent.yRot };
+    const unseen = unknownAround(world, pose, r);
+    if (unseen.length) await checkCells(bridge, world, unseen);
+    const size = (2 * r + 1) ** 3;
+    return mapSummary(world, pose, r, mode, `Looked at ${fresh.cells.length + unseen.length} of the ${size} blocks around you `
+      + `(the nearest ${fresh.cells.length} again, plus everything not on your map yet); the rest is from your map. `
+      + `You are at ${Frame.world(x, y, z)}, facing ${compassName(((Math.round(pose.yRot / 90) % 4) + 4) % 4)}.`);
+  }
+
   add({
     name: 'get_status',
     description: 'Where the robot and every player online are, which way the robot faces, and what is directly around the robot. Cheap: call it whenever you are unsure.',
@@ -315,10 +338,12 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
 
   add({
     name: 'scan',
-    description: 'Look around the robot. what "blocks": every block in a cube around it (radius 3 = 7x7x7, about 0.3s; '
-      + 'radius 8 = 17x17x17, about 5s; a bigger scan means a longer result, so start small): what is next to the robot, '
-      + 'the ground below it, counts of each block type, and the coordinates of the rarer blocks; it also updates the '
-      + 'robot\'s map for go_to. what "entities": mobs, animals, players and dropped items (fast, up to '
+    description: 'Look around the robot. The [Now] block already says what your map knows right around you; scan to see '
+      + 'further or to be sure. what "blocks": every block in a cube around it (a bigger radius means a longer result, so '
+      + 'start small): what is next to the robot, the ground below it, counts of each block type, and the coordinates of the '
+      + `rarer blocks. Up to radius ${FRESH_SCAN_RADIUS} everything is looked at again; further out, only what your map `
+      + 'doesn\'t know yet (the rest comes from the map), so a big scan of a known place is quick. '
+      + 'what "entities": mobs, animals, players and dropped items (fast, up to '
       + `${entities.MAX_RADIUS} blocks away): what each one is, where, how far, and which are hostile. They move, so call it `
       + 'again before acting on one; to attack one, pass its position to attack. what "both" (the default): the two at once.',
     parameters: {
@@ -336,11 +361,10 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       const mode = entities.WHAT.includes(what) ? what : 'both';
       const r = clampInt(radius ?? settings.get('scan.radius'), 1, MAX_SCAN_RADIUS);
       const [blocks, seen] = await Promise.all([
-        mode !== 'entities' && scan(r, { quiet: true }),
+        mode !== 'entities' && lookAround(r),
         mode !== 'blocks' && entitiesText(entities.entityRadius(mode === 'entities' ? radius : radius ?? r, mode)),
       ]);
-      if (mode !== 'entities' && !blocks) throw new Error('the scan failed (see the console)');
-      return [blocks && summarizeScan(blocks, settings.get('llm.coordinates')), seen].filter(Boolean).join('\n');
+      return [blocks, seen].filter(Boolean).join('\n');
     },
   });
 
@@ -504,10 +528,19 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly), near: nearDefault }));
       const frame = await frameNow();
       // The pathfinder talks in world coordinates: put them in the model's frame, as seen from where the robot ended up.
-      // One line per rescan on the way is noise for the model: count them instead.
+      // One line per rescan or path check on the way is noise for the model: count them instead.
+      const noise = (l) => l.startsWith('Entering unknown territory') || l.startsWith('Checking the path')
+        || l.startsWith('Re-planning') || l.startsWith('Looking ahead') || l.startsWith('Measuring the ground');
       const rescans = lines.filter((l) => l.startsWith('Entering unknown territory')).length;
-      const told = lines.filter((l) => !l.startsWith('Entering unknown territory'));
-      if (rescans) told.splice(1, 0, `Looked around ${rescans} time(s) on the way, walking into unseen ground.`);
+      const checks = lines.filter((l) => l.startsWith('Checking the path')).length;
+      const aheads = lines.filter((l) => l.startsWith('Looking ahead') && !l.includes('measured the ground')).length;
+      const measured = lines.filter((l) => l.startsWith('Measuring the ground') || l.includes('measured the ground')).length;
+      const told = lines.filter((l) => !noise(l));
+      const looked = [aheads && `looked ahead ${aheads} time(s) where the plan met the unknown`,
+        measured && `measured the ground ${measured} more time(s) along a detour or around something in the way`,
+        checks && `checked the path ${checks} time(s) before walking it`, rescans && `rescanned ${rescans} time(s) on the way`]
+        .filter(Boolean);
+      if (looked.length) told.splice(1, 0, `Looked ahead: ${looked.join(', ')}.`);
       let text = `${told.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;
       if (lines.some((l) => l.includes('boxed in'))) {
         const around = await Promise.all(DIRECTIONS.map(async (d) => {
@@ -983,17 +1016,21 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
   return { list, call, tools, stopRobot, setDescriber };
 }
 
-/** A scan, told the way a model can use it. */
-function summarizeScan(scan, mode = 'world') {
+/**
+ * A scan, told the way a model can use it. Cells whose block is '?' are unknown (not identified,
+ * or not on the map yet). `intro` replaces the first line, `unknownText(n)` the line counting them.
+ */
+function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) => `${n} blocks couldn't be identified.` } = {}) {
   const { x: ax, y: ay, z: az } = scan.agent.position;
   const facing = ((Math.round(scan.agent.yRot / 90) % 4) + 4) % 4;
   const frame = new Frame({ x: ax, y: ay, z: az, facing }, mode);
   const at = new Map(scan.cells.map((c) => [`${c.x},${c.y},${c.z}`, c.block]));
   const vertical = (dy) => (dy === 0 ? 'level with you' : `${Math.abs(dy)} ${dy > 0 ? 'up' : 'down'}`);
-  const lines = [frame.relative
+  const solidAt = (block) => block && block !== '?' && isSolid(block);
+  const lines = [intro || (frame.relative
     ? `Scanned ${scan.cells.length} blocks around you (you are at ${Frame.world(ax, ay, az)}, facing ${compassName(facing)}).`
     : `Scanned ${scan.cells.length} blocks around the robot at ${ax} ${ay} ${az}, facing ${compassName(facing)} `
-      + `(${orientationText(facing)}).`];
+      + `(${orientationText(facing)}).`)];
 
   lines.push(`Next to the robot: ${DIRECTIONS.map((d) => {
     const [dx, dy, dz] = offsetOf(d, facing);
@@ -1002,7 +1039,7 @@ function summarizeScan(scan, mode = 'world') {
 
   let ground = null;
   for (let y = ay - 1; at.has(`${ax},${y},${az}`); y--) {
-    if (isSolid(at.get(`${ax},${y},${az}`))) {
+    if (solidAt(at.get(`${ax},${y},${az}`))) {
       ground = { y, block: at.get(`${ax},${y},${az}`) };
       break;
     }
@@ -1013,13 +1050,14 @@ function summarizeScan(scan, mode = 'world') {
 
   const byType = new Map();
   for (const c of scan.cells) {
-    if (c.block === 'Air') continue;
+    if (c.block === 'Air' || c.block === '?') continue;
     if (!byType.has(c.block)) byType.set(c.block, []);
     byType.get(c.block).push(c);
   }
   const dist = (c) => Math.abs(c.x - ax) + Math.abs(c.y - ay) + Math.abs(c.z - az);
   const types = [...byType.entries()].sort((a, b) => b[1].length - a[1].length);
-  const air = scan.cells.length - types.reduce((n, [, cells]) => n + cells.length, 0);
+  const unknown = scan.cells.filter((c) => c.block === '?').length;
+  const air = scan.cells.length - unknown - types.reduce((n, [, cells]) => n + cells.length, 0);
   lines.push(`Counts: Air ${air}, ${types.map(([name, cells]) => `${name} ${cells.length}`).join(', ') || 'nothing else'}.`);
 
   const rare = types.filter(([, cells]) => cells.length <= COMMON_THRESHOLD);
@@ -1041,17 +1079,48 @@ function summarizeScan(scan, mode = 'world') {
       const cx = ax + dx * k;
       const cz = az + dz * k;
       let top = null;
+      let unseen = false;
       for (let y = b.maxY; y >= b.minY; y--) {
         const block = at.get(`${cx},${y},${cz}`);
-        if (block && isSolid(block)) { top = y; break; }
+        if (block === '?') unseen = true;
+        if (solidAt(block)) { top = y; break; }
       }
-      tops.push(`${k} ${d}: ${top === null ? 'no ground' : `top block ${frame.relative ? vertical(top - ay) : `at y=${top}`}`}`);
+      const none = unseen ? 'not seen' : 'no ground';
+      tops.push(`${k} ${d}: ${top === null ? none : `top block ${frame.relative ? vertical(top - ay) : `at y=${top}`}`}`);
     }
   }
   lines.push(`Highest solid block of nearby columns: ${tops.join(', ')}.`);
-  const unknown = scan.cells.filter((c) => c.block === '?').length;
-  if (unknown) lines.push(`${unknown} blocks couldn't be identified.`);
+  if (unknown) lines.push(unknownText(unknown));
   return lines.join('\n');
+}
+
+/**
+ * What the map says about the cube of `radius` around the robot, summarized like a scan (Vision
+ * keeps the map fresh close to the robot). Used for the model's awareness.
+ */
+function mapSummary(world, pose, radius, mode = 'world', intro = null) {
+  const cells = [];
+  let known = 0;
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const [x, y, z] = [pose.x + dx, pose.y + dy, pose.z + dz];
+        const name = world.get(x, y, z);
+        const seen = name && name !== CLEAR;
+        if (seen) known++;
+        cells.push({ x, y, z, block: seen ? name : '?' });
+      }
+    }
+  }
+  // Almost nothing known: one line, not a page of question marks.
+  if (!intro && known < cells.length / 10) {
+    return `Around you: your map knows only ${known} of the ${cells.length} blocks within ${radius} of you so far; scan to see.`;
+  }
+  return summarizeScan({ agent: { position: { x: pose.x, y: pose.y, z: pose.z }, yRot: pose.yRot ?? [0, 90, 180, -90][pose.facing] }, cells },
+    mode, {
+      intro: intro || `Around you, from your map (Awareness radius ${radius}: ${known} of ${cells.length} blocks known):`,
+      unknownText: (n) => `${n} blocks around you haven't been seen yet (scan to see them).`,
+    });
 }
 
 function countMoved(a, b) {
@@ -1096,4 +1165,4 @@ function isOwnChat(message) {
   return recentlySaid.some((r) => Date.now() - r.time < 30000 && plain.includes(r.text));
 }
 
-module.exports = { createToolbox, sayInChat, isOwnChat, summarizeScan };
+module.exports = { createToolbox, sayInChat, isOwnChat, summarizeScan, mapSummary };

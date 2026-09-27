@@ -6,14 +6,15 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 const { scanAroundAgent, formatScan } = require('../agent/scan');
-const { WorldKnowledge } = require('../agent/world');
-const { Navigator, pathMessage } = require('../agent/navigator');
+const { WorldMap, CLEAR } = require('../world/map');
+const { Navigator, pathMessage, METHODS } = require('../agent/navigator');
 const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
 const {
   nearbyEntities, countsText, entityRadius, entitiesMessage, MAX_ENTITIES, MAX_RADIUS: MAX_ENTITY_RADIUS, WHAT,
 } = require('../agent/entities');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
+const { Vision } = require('../agent/vision');
 const { Brain } = require('./brain');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
@@ -21,6 +22,13 @@ const SRC_DIR = path.join(__dirname, '..');
 const STARTED_AT = Date.now();
 const LOG_HISTORY = 500;
 const MAX_SCAN_RADIUS = 15; // 31x31x31, about 30 seconds
+// The Nanny Cam gets the map this far around the robot (its Zoom goes up to here), and a fresh copy
+// once the robot has moved REGION_MOVE blocks from where the last one was centered.
+const MAP_VIEW_RADIUS = 30;
+const REGION_MOVE = 8;
+// Map changes are sent in batches; a batch bigger than this (a big scan) sends the whole region instead.
+const MAP_BATCH_MS = 100;
+const MAP_BATCH_LIMIT = 4000;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -41,9 +49,13 @@ class WebServer {
     this.port = port;
     this.bridge = bridge;
     this.log = [];
-    this.sight = null; // the latest scan, in the compact form sent to the Nanny Cam
-    this.entities = null; // the latest look for entities, also for the Nanny Cam
-    this.world = new WorldKnowledge();
+    this.sight = null; // { agent, scanned, time } of the latest scan
+    this.entities = null; // the latest look for entities, for the Nanny Cam
+    this.agent = null; // { position, yRot } of the robot, as last seen
+    this.world = new WorldMap(); // everything the robot has seen, saved per world
+    this._region = null; // center of the map region the Nanny Cam has
+    this._pendingCells = [];
+    this._mapTimer = null;
 
     // Tunables from the Configuration tab, saved in data/settings.json.
     this.settings = new Settings();
@@ -54,20 +66,32 @@ class WebServer {
       this._broadcast(this.settings.message());
     });
 
+    // Vision: a small look around after every step and action (and when idle), into the map.
+    this.vision = new Vision({ bridge, world: this.world, settings: this.settings, busy: () => this.navigator.busy });
+    this.vision.on('look', (look) => this._onLook(look));
+    this.vision.on('moved', (pose) => {
+      // The robot moved without Ptolemy moving it (by hand, or a teleport).
+      this.navigator.agentMoved(pose);
+      this._agentAt({ position: { x: pose.x, y: pose.y, z: pose.z }, yRot: pose.yRot });
+    });
+    this.vision.start();
+
     this.navigator = new Navigator({
       bridge,
       world: this.world,
       settings: this.settings,
       scan: (radius, opts) => this._scan(radius, opts),
       log: (text, extra) => this._addLog('system', text, extra),
+      vision: this.vision,
       broadcast: (message) => {
-        // Keep the stored Sight's robot pose current, so pages opened mid-walk see where it is.
-        if (message.type === 'agent' && this.sight) {
-          this.sight.agent = { ...this.sight.agent, position: message.position, yRot: message.yRot };
-        }
+        if (message.type === 'agent') this._agentAt(message, { broadcast: false });
         this._broadcast(message);
       },
     });
+
+    // Everything seen goes to the map; the Nanny Cam gets the changes near the robot.
+    this.world.on('change', (cells) => this._mapChanged(cells));
+    this.world.on('reset', () => this._sendRegion());
     this.nextLogId = 1;
 
     // Worlds and their memory, LLM endpoints, Automatic mode, wondering, chat requests, MCP.
@@ -76,6 +100,7 @@ class WebServer {
       settings: this.settings,
       navigator: this.navigator,
       world: this.world,
+      vision: this.vision,
       scan: (radius, opts) => this._scan(radius, opts),
       lookForEntities: (radius, opts) => this._entities(radius, opts),
       sight: () => this.sight,
@@ -119,7 +144,12 @@ class WebServer {
     // Moving the agent by hand invalidates stored paths (the walker's own commands are quiet).
     bridge.on('response', (res) => {
       if (!res.ok || !/^agent (move|turn|tp|teleport)\b/i.test(res.commandLine)) return;
-      getAgentPose(bridge).then((pose) => this.navigator.agentMoved(pose), () => {});
+      getAgentPose(bridge).then((pose) => {
+        this.navigator.agentMoved(pose);
+        this.vision.robotAt(pose);
+        this.vision.soon();
+        this._agentAt({ position: { x: pose.x, y: pose.y, z: pose.z }, yRot: pose.yRot });
+      }, () => {});
     });
     bridge.on('event', ({ name, body }) => {
       if (name === 'PlayerMessage' || name === 'AgentCommand') return; // logged above/below
@@ -151,6 +181,8 @@ class WebServer {
   }
 
   close() {
+    this.vision.stop();
+    this.world.flush();
     this.brain.close();
     this.wss.clients.forEach((ws) => ws.close());
     this.http.close();
@@ -170,7 +202,8 @@ class WebServer {
   _onClient(ws) {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
-    if (this.sight) ws.send(JSON.stringify(this.sight));
+    if (this.agent) ws.send(JSON.stringify(this._regionMessage()));
+    if (this.vision.last && this.vision.last.center) ws.send(JSON.stringify(visionMessage(this.vision.last)));
     if (this.entities) ws.send(JSON.stringify(this.entities));
     ws.send(JSON.stringify(this.settings.message()));
     ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
@@ -323,7 +356,7 @@ class WebServer {
         return;
       case 'pathfindwalk':
       case 'flypathfindwalk': {
-        // #pathfindwalk x y z [scan=7] [retries=3]   (scan = rescan radius)
+        // #pathfindwalk x y z [scan=7] [retries=3] [method=auto]   (scan = rescan radius)
         const opts = {
           scanRadius: this.settings.get('path.scanRadius'),
           retries: this.settings.get('path.retries'),
@@ -332,16 +365,34 @@ class WebServer {
         const coords = [];
         for (const arg of args) {
           const m = /^(scan|retries)=(\d+)$/.exec(arg);
+          const how = /^method=(\w+)$/i.exec(arg);
           if (/^(near|exact)$/i.test(arg)) opts.near = arg.toLowerCase() === 'near';
+          else if (how) opts.method = how[1].toLowerCase();
           else if (!m) coords.push(arg);
           else if (m[1] === 'scan') opts.scanRadius = Number(m[2]);
           else opts.retries = Number(m[2]);
+        }
+        if (opts.method && opts.method !== 'auto' && !METHODS[opts.method]) {
+          say(`method= is one of: auto, ${Object.keys(METHODS).map((k) => `${k} (${METHODS[k]})`).join(', ')}.`);
+          return;
         }
         if (opts.scanRadius < 1 || opts.scanRadius > MAX_SCAN_RADIUS) {
           say(`scan= is the rescan radius, from 1 to ${MAX_SCAN_RADIUS}.`);
           return;
         }
         this.navigator.pathfindwalk(coords, opts);
+        return;
+      }
+      case 'map': {
+        if (args[0] === 'forget') {
+          this.world.clear();
+          say('Forgot this world\'s map. The robot starts seeing it again from scratch.');
+          return;
+        }
+        const st = this.world.stats();
+        say(`The map of this world: ${st.columnsOnDisk} chunk columns saved`
+          + `${this.world.dir ? '' : ' (not saved: no world detected yet)'}, ${st.columnsInRam} in memory `
+          + `(${st.subChunksInRam} sub-chunks of 16x16x16). #map forget wipes it.`);
         return;
       }
       case 'pathsafe':
@@ -383,12 +434,14 @@ class WebServer {
       } else {
         this._addLog('system', formatScan(scan), { commandLine: 'Scan result', body: scan });
       }
-      // Each scan replaces the robot's Sight, and tells us where the agent is.
-      this.world.setSight(scan);
+      // Each scan goes into the map, and tells us where the agent is.
       const { x, y, z } = scan.agent.position;
-      this.navigator.agentMoved({ x, y, z, facing: facingFromRotation(scan.agent.yRot) });
-      this.sight = sightMessage(scan);
-      this._broadcast(this.sight);
+      const pose = { x, y, z, facing: facingFromRotation(scan.agent.yRot), yRot: scan.agent.yRot };
+      this.navigator.agentMoved(pose);
+      this.vision.robotAt(pose);
+      this.sight = { agent: scan.agent, scanned: scan.cells.length, time: Date.now() };
+      this._agentAt({ position: scan.agent.position, yRot: scan.agent.yRot });
+      this.world.setSight(scan);
       return scan;
     } catch (err) {
       this._addLog('system', `Scan failed: ${err.message}`);
@@ -431,6 +484,65 @@ class WebServer {
     } catch (err) {
       this._addLog('system', `Looking for entities failed: ${err.message}`);
       return null;
+    }
+  }
+
+  // --- The map, as the Nanny Cam sees it ---------------------------------------------
+
+  /** The robot is here: remember it, and send the Nanny Cam a fresh region if it went far. */
+  _agentAt({ position, yRot }, { broadcast = true } = {}) {
+    this.agent = { position: { x: position.x, y: position.y, z: position.z }, yRot };
+    if (broadcast) this._broadcast({ type: 'agent', position: this.agent.position, yRot });
+    const r = this._region;
+    if (!r || Math.max(Math.abs(r.x - position.x), Math.abs(r.y - position.y), Math.abs(r.z - position.z)) >= REGION_MOVE) {
+      this._sendRegion();
+    }
+  }
+
+  _mapChanged(cells) {
+    if (!this._region) return;
+    for (const c of cells) this._pendingCells.push(c);
+    if (!this._mapTimer) this._mapTimer = setTimeout(() => this._flushMapChanges(), MAP_BATCH_MS);
+  }
+
+  _flushMapChanges() {
+    this._mapTimer = null;
+    const cells = this._pendingCells;
+    this._pendingCells = [];
+    if (cells.length > MAP_BATCH_LIMIT) {
+      this._sendRegion();
+      return;
+    }
+    const r = this._region;
+    const near = cells.filter(([x, y, z]) => Math.max(Math.abs(x - r.x), Math.abs(y - r.y), Math.abs(z - r.z)) <= MAP_VIEW_RADIUS);
+    if (near.length) this._broadcast({ type: 'mapCells', ...packCells(near) });
+  }
+
+  _sendRegion() {
+    if (!this.agent) return;
+    clearTimeout(this._mapTimer);
+    this._mapTimer = null;
+    this._pendingCells = [];
+    this._broadcast(this._regionMessage());
+  }
+
+  /** Every known block within MAP_VIEW_RADIUS of the robot (air left out), for the Nanny Cam. */
+  _regionMessage() {
+    const { x, y, z } = this.agent.position;
+    this._region = { x, y, z };
+    const r = MAP_VIEW_RADIUS;
+    const cells = [];
+    this.world.forEachIn([x - r, y - r, z - r], [x + r, y + r, z + r], (cx, cy, cz, name) => {
+      if (name !== 'Air' && name !== CLEAR) cells.push([cx, cy, cz, name]);
+    });
+    return { type: 'map', center: { x, y, z }, radius: r, agent: this.agent, time: Date.now(), ...packCells(cells) };
+  }
+
+  _onLook(look) {
+    this._broadcast(visionMessage(look));
+    if (look.entities) {
+      this.entities = entitiesMessage({ ...look.robot, yRot: this.agent ? this.agent.yRot : 0 }, look.entityRadius, look.entities);
+      this._broadcast(this.entities);
     }
   }
 
@@ -527,22 +639,26 @@ function summarizeAgentResult(commandName, result) {
 }
 
 /**
- * Compact form of a scan for the Nanny Cam: a palette of block names plus a flat
- * [x, y, z, paletteIndex, ...] array of every non-air block (~30k blocks stay well under 1 MB).
+ * Cells for the WebUI: a palette of block names plus a flat [x, y, z, paletteIndex, ...] array
+ * ("Air" is a name too: a cell that turned out empty).
  */
-function sightMessage(scan) {
+function packCells(cells) {
   const palette = [];
   const index = new Map();
   const blocks = [];
-  for (const cell of scan.cells) {
-    if (cell.block === 'Air' || cell.block === '?') continue; // '?' = couldn't be identified
-    if (!index.has(cell.block)) {
-      index.set(cell.block, palette.length);
-      palette.push(cell.block);
+  for (const [x, y, z, name] of cells) {
+    if (!index.has(name)) {
+      index.set(name, palette.length);
+      palette.push(name);
     }
-    blocks.push(cell.x, cell.y, cell.z, index.get(cell.block));
+    blocks.push(x, y, z, index.get(name));
   }
-  return { type: 'sight', agent: scan.agent, scanned: scan.cells.length, time: Date.now(), palette, blocks };
+  return { palette, blocks };
+}
+
+/** Where Vision looked last, for the Nanny Cam's Vision filter. */
+function visionMessage({ center, radius, robot, time }) {
+  return { type: 'vision', center, radius, robot, time };
 }
 
 function codeChangedSinceStart(dir = SRC_DIR) {

@@ -65,7 +65,9 @@
       case 'log':
         appendLog(msg.entry);
         break;
-      case 'sight':
+      case 'map':
+      case 'mapCells':
+      case 'vision':
       case 'entities':
       case 'path':
       case 'agent':

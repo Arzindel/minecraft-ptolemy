@@ -116,8 +116,13 @@
         <div class="cam">
           <div class="cam-toolbar">
             <span class="console-title">Nanny Cam</span>
+            <div class="segmented" id="cam-filter" role="radiogroup" aria-label="What to highlight">
+              <button type="button" data-filter="map" role="radio" aria-checked="true" title="Everything the robot has seen (its map), in colour">Map</button>
+              <button type="button" data-filter="awareness" role="radio" aria-checked="false" title="Colour only what the robot is aware of (the Awareness radius); the rest of the map in grey">Awareness</button>
+              <button type="button" data-filter="vision" role="radio" aria-checked="false" title="Colour only what Vision looked at last (it follows the robot, and looks ahead while walking); the rest in grey">Vision</button>
+            </div>
             <label class="cam-control" title="How many blocks around the robot to show">
-              Zoom <input type="range" id="cam-radius" min="1" max="15" value="15">
+              Zoom <input type="range" id="cam-radius" min="1" max="30" value="15">
               <span id="cam-radius-value">15</span>
             </label>
             <label class="cam-control" title="How far around the robot to scan, in the same units as Zoom">
@@ -135,10 +140,10 @@
           </div>
           <div class="cam-view">
             <canvas id="cam-canvas"></canvas>
-            <div class="cam-empty" id="cam-empty"><span>Nothing in sight yet. Press <strong>Scan</strong> (or run <code>#scan</code>).</span></div>
+            <div class="cam-empty" id="cam-empty"><span>Nothing on the map here yet. Vision fills it in as the robot moves; press <strong>Scan</strong> (or run <code>#scan</code>) to see more at once.</span></div>
             <div class="cam-tooltip" id="cam-tooltip" hidden></div>
           </div>
-          <p class="hint"><span id="cam-info">No sight yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>
+          <p class="hint"><span id="cam-info">No map yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>
         </div>
       
       </div>
