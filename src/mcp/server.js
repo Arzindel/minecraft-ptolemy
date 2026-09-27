@@ -140,7 +140,6 @@ class McpServer {
           instructions: this.settings.get('llm.instructions'),
           tools: this.toolbox.list(),
           textMode: false,
-          coordinates,
         })}\n\nOver MCP there is no [Now] block: call get_status to see where things are.${memory ? `\n\n${memory}` : ''}`;
         const task = params.arguments && params.arguments.task;
         return {
