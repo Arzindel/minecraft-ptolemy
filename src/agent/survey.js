@@ -119,6 +119,37 @@ async function checkCells(bridge, world, cells) {
   return unique.length;
 }
 
+/**
+ * Method 1: the cells of five tubes of `radius` between `a` and `b`: straight up/down from each to
+ * the other's height, the two level lines that close that rectangle, and the diagonal. Covers the
+ * straight flight and the ways around it above or below, and works underground too.
+ */
+function corridorCells(a, b, radius = 2) {
+  const aUp = { x: a.x, y: b.y, z: a.z };
+  const bUp = { x: b.x, y: a.y, z: b.z };
+  const lines = [[a, aUp], [b, bUp], [aUp, b], [bUp, a], [a, b]];
+  const cells = new Map();
+  const r2 = radius * radius;
+  for (const [p, q] of lines) {
+    const len = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z);
+    const n = Math.max(1, Math.ceil(len * 2));
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const cx = p.x + (q.x - p.x) * t;
+      const cy = p.y + (q.y - p.y) * t;
+      const cz = p.z + (q.z - p.z) * t;
+      for (let x = Math.floor(cx - radius); x <= Math.ceil(cx + radius); x++) {
+        for (let y = Math.floor(cy - radius); y <= Math.ceil(cy + radius); y++) {
+          for (let z = Math.floor(cz - radius); z <= Math.ceil(cz + radius); z++) {
+            if ((x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2 <= r2) cells.set(`${x},${y},${z}`, [x, y, z]);
+          }
+        }
+      }
+    }
+  }
+  return [...cells.values()];
+}
+
 /** The cells of a cube around `center` that aren't on the map yet. */
 function unknownAround(world, center, radius) {
   const cells = [];
@@ -133,4 +164,4 @@ function unknownAround(world, center, radius) {
   return cells;
 }
 
-module.exports = { surveySurface, checkCells, unknownAround, corridorColumns, displayName };
+module.exports = { surveySurface, checkCells, unknownAround, corridorColumns, corridorCells, displayName };

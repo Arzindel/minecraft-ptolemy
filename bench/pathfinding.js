@@ -12,7 +12,9 @@ const { isSolid } = require('../public/blocks');
 
 const SEEDS = [1, 2, 3, 4, 5, 6];
 const METHODS = (process.env.METHODS || 'rescan,surface,lookahead').split(',');
+const FLY_METHODS = (process.env.FLY_METHODS || 'rescan,lookahead,corridor').split(',');
 const PLAYER = { x: -58, z: 81 };
+// Walking scenarios compare METHODS; flying ones ("airborne" steps are fine there) FLY_METHODS.
 const START = { x: -118, z: 76 };
 
 /** A wall across the way at x = -90: `half` blocks either side of z = 76, `top` blocks above ground. */
@@ -40,6 +42,8 @@ const SCENARIOS = {
   'wall 71 wide (2 tries)': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.02, walls: wall(seed, 35, 30) }), tries: 2 }),
   'wall appears mid-walk': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.04 }), dropWall: true }),
   'river on the way': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.03, river: { x0: -96, x1: -84, bed: 86, level: 93 } }) }),
+  'flying over a forest': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.06 }), fly: true }),
+  'flying over big hills': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.03, from: [-118, 80], to: [-58, 110] }), fly: true }),
   'cave tunnel': (seed) => {
     const terrain = makeTerrain({ seed, trees: 0.02 });
     const y = 80;
@@ -106,7 +110,7 @@ function airborne(terrain, cells) {
 async function run(name, make, { vision = true, method = 'auto' }) {
   const totals = { arrived: 0, moves: 0, airborne: 0, bumps: 0, commands: 0, ms: 0 };
   for (const seed of SEEDS) {
-    const { terrain, start, tries = 1, dropWall = false, player = null } = make(seed);
+    const { terrain, start, tries = 1, dropWall = false, player = null, fly = false } = make(seed);
     const agent = start ? { ...start, facing: 0 } : { x: START.x, y: terrain.height(START.x, START.z) + 1, z: START.z, facing: 0 };
     const py = player ? player.y : terrain.height(PLAYER.x, PLAYER.z) + 1;
     const env = setup({ terrain, agent, player: { x: PLAYER.x, y: py, z: PLAYER.z }, vision });
@@ -127,7 +131,7 @@ async function run(name, make, { vision = true, method = 'auto' }) {
     }
     const t0 = Date.now();
     for (let i = 0; i < tries; i++) {
-      await env.navigator.pathfindwalk(['@p'], { method });
+      await env.navigator.pathfindwalk(['@p'], { method, fly });
       if (Math.hypot(agent.x - PLAYER.x, agent.y - py, agent.z - PLAYER.z) <= 3.5) break;
     }
     totals.ms += Date.now() - t0;
@@ -145,7 +149,8 @@ async function run(name, make, { vision = true, method = 'auto' }) {
   const names = Object.keys(SCENARIOS).filter((n) => !wanted.length || wanted.some((w) => n.includes(w)));
   const rows = [];
   for (const name of names) {
-    for (const method of METHODS) {
+    const flying = SCENARIOS[name](SEEDS[0]).fly;
+    for (const method of flying ? FLY_METHODS : METHODS) {
       const t = await run(name, SCENARIOS[name], { method });
       process.stderr.write(`  ${name}, ${method}: ${t.arrived}/${SEEDS.length}\n`);
       rows.push([name, method, `${t.arrived}/${SEEDS.length}`, t.moves, t.airborne, t.bumps, t.commands, `${(t.ms / 1000).toFixed(1)}s`]);

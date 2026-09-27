@@ -4,7 +4,7 @@ const { planPath, summarizeSteps, cellsAround } = require('./pathfind');
 const { getAgentPose, samePose, describePose } = require('./pose');
 const { playerPosition } = require('./players');
 const { aheadOnPath } = require('./vision');
-const { surveySurface, checkCells, unknownAround } = require('./survey');
+const { surveySurface, checkCells, unknownAround, corridorCells } = require('./survey');
 
 const SAFE_WAIT_MS = 2000;
 // Re-plans after Vision saw the path blocked, per walk (each costs nothing but a plan).
@@ -18,11 +18,14 @@ const END_SCAN_RADIUS = 4;
 // How #pathfindwalk / go_to find their way (method=... picks one; auto: surface when walking, rescan when flying).
 const METHODS = {
   surface: 'surveying the ground first',
+  corridor: 'scanning a corridor of tubes between here and there first, then looking ahead',
   lookahead: 'looking ahead where the plan meets the unknown, before moving',
   rescan: 'rescanning around the robot at the edge of what it knows',
 };
 // Look-ahead: the cube scanned (unseen cells only) where the plan first meets the unknown.
 const LOOK_RADIUS = 3;
+// Method 1: the radius of the five tubes scanned between the robot and the target.
+const CORRIDOR_RADIUS = 2;
 const SAFE_POLL_MS = 100;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,7 +133,7 @@ class Navigator {
   }
 
   async _pathfindwalk(kind, args, { scanRadius: radius, retries, fly, near, method = 'auto' }) {
-    let how = method === 'auto' ? (fly ? 'lookahead' : 'surface') : method;
+    let how = method === 'auto' ? (fly ? 'corridor' : 'surface') : method;
     if (!METHODS[how]) throw new Error(`unknown method "${method}" (auto, ${Object.keys(METHODS).join(', ')})`);
     // Look around first: the whole rescan radius for the old way, a small cube otherwise (the ground
     // survey and the path checks see the rest).
@@ -155,6 +158,10 @@ class Navigator {
     // ground are planned as solid (see planPath's `underground`).
     // (An end under a roof is fine: the cells around it were scanned, and known cells beat guesses.)
     if (how === 'surface') await this._surveyWay(pose, goal);
+    if (how === 'corridor') {
+      await this._scanCorridor(pose, goal);
+      how = 'lookahead'; // then fill in whatever the corridor missed
+    }
     if (how === 'lookahead') {
       // A target in the unknown: look around it first, so the plan starts filling in from both ends.
       const around = unknownAround(this.world, goal, LOOK_RADIUS);
@@ -173,12 +180,11 @@ class Navigator {
       let plan = planPath(this.world, pose, goal, { ...this._planOptions(fly), underground: !overGround });
       if (plan.error && overGround) {
         // No way over the surface as guessed (say, the target is in a cave): look ahead instead.
-        plan = planPath(this.world, pose, goal, this._planOptions(fly));
-        if (!plan.error) {
-          overGround = false;
-          how = 'lookahead';
-          this.log(`No way over the ground as measured, so ${METHODS.lookahead} instead.`);
-        }
+        overGround = false;
+        how = 'lookahead';
+        this.log(`No way over the ground as measured, so ${METHODS.corridor} instead.`);
+        await this._scanCorridor(pose, goal);
+        continue;
       }
       if (plan.error) {
         this._setPath(kind, null);
@@ -218,7 +224,8 @@ class Navigator {
         const doubtful = [];
         for (const st of plan.steps) {
           if (!st.enters) continue;
-          for (const c of [st.enters, ...leanedOn(st.enters)]) if (!this.world.verified(...c)) doubtful.push(c);
+          // Flying needs nothing to hold it up: only the cells it goes through matter.
+          for (const c of fly ? [st.enters] : [st.enters, ...leanedOn(st.enters)]) if (!this.world.verified(...c)) doubtful.push(c);
         }
         if (doubtful.length) {
           checks++;
@@ -279,6 +286,13 @@ class Navigator {
       await this.scan(radius, { quiet: true });
       checks = 0;
     }
+  }
+
+  /** Method 1: scan the unseen cells of the five tubes between the robot and the goal. */
+  async _scanCorridor(pose, goal) {
+    const cells = corridorCells(pose, goal, CORRIDOR_RADIUS).filter((c) => this.world.state(...c) === 'unknown');
+    if (cells.length) await checkCells(this.bridge, this.world, cells);
+    this.log(`Scanned a corridor between here and there: ${cells.length} unseen cells in five tubes of radius ${CORRIDOR_RADIUS}.`);
   }
 
   /**
