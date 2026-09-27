@@ -172,8 +172,11 @@
     const fact = (k, v) => dl.append(el('dt', { textContent: k }), el('dd', { textContent: v }));
     if (p && p.robot) fact('Robot', `${p.robot.x} ${p.robot.y} ${p.robot.z} facing ${p.robot.facing}${p.robot.areas ? ` · in ${p.robot.areas}` : ''}`);
     else fact('Robot', data.status && data.status.agent.exists === false ? 'no agent in this world' : 'unknown');
-    if (p && p.player) fact('Player', `${p.player.x} ${p.player.y} ${p.player.z}${p.player.areas ? ` · in ${p.player.areas}` : ''}`);
-    else fact('Player', 'unknown');
+    const list = (p && p.players) || [];
+    if (!list.length) fact('Players', 'unknown');
+    for (const pl of list) {
+      fact(pl.host ? `${pl.name} (you)` : pl.name, `${pl.x} ${pl.y} ${pl.z}${pl.areas ? ` · in ${pl.areas}` : ''}`);
+    }
 
     const pilot = data.pilot;
     if (pilot) {

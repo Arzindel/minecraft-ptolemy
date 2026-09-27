@@ -265,6 +265,22 @@ Small models mix up coordinate systems easily, so the two never share names:
 Internally, relative positions are [left, up, forward], so facing south (y-rot 0) they're simply
 world − robot. The other facings are that, rotated (`src/agent/frame.js`).
 
+### Several players
+
+- **Everyone online is found by name:** `list` gives who's online, and `querytarget @a[name="…"]` gives
+  where each one is. `querytarget @s` only ever finds the player whose game is connected to Ptolemy.
+- **Every request remembers who asked:** the chat sender, or the connected player for requests typed
+  in the WebUI. While wondering, nobody asked.
+- **The `[Now]` block and `get_status` list every player,** marking who asked and who's at the Ptolemy PC.
+  "Me", "here" and "the player" mean whoever asked.
+- **`go_to {target: "player"}` and `teleport_to_player` go to whoever asked.** Pass `player: "Bob"` (any
+  case, or a unique start of the name) to go to someone else. An unknown name gets the list of who's
+  online.
+- **Teleporting to a player other than the agent's owner** uses their coordinates, since `agent tp`
+  alone always goes to the owner.
+- **The Dashboard lists every player's position.**
+- **In the console:** `#pathfindwalk @p Bob` walks to Bob.
+
 ### Exact or near: where go_to stops
 
 `go_to` has a `precision` option (the console takes `near` / `exact` after the target):

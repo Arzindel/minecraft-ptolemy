@@ -3,6 +3,7 @@
 const { FORWARD, turnLeft, turnRight, getAgentPose } = require('../agent/pose');
 const { isSolid } = require('../../public/blocks');
 const { Frame } = require('../agent/frame');
+const players = require('../agent/players');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
 // game commands and report what actually happened, since the game's own replies say "success"
@@ -101,12 +102,28 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     return new Frame(pose || await getAgentPose(bridge), settings.get('llm.coordinates'));
   }
 
-  /** Where the player is, in the frame, for results after the robot moved. */
+  function areaOf(p) {
+    return worlds.current && (worlds.current.describeAreasAt(p.x, p.y, p.z) || worlds.current.describeAreasAt(p.x, p.y - 1, p.z));
+  }
+
+  /** Where the player who asked is, in the frame, for results after the robot moved. */
   async function playerLine(frame) {
-    const p = await playerPosition();
+    const p = await players.playerPosition(bridge, requester);
     if (!p) return '';
-    const where = worlds.current && (worlds.current.describeAreasAt(p.x, p.y, p.z) || worlds.current.describeAreasAt(p.x, p.y - 1, p.z));
-    return ` The player is at ${frame.fmt(p.x, p.y, p.z)}${where ? ` (in ${where})` : ''}.`;
+    const where = areaOf(p);
+    return ` ${p.name || 'The player'}${p.name && p.name === requester && requesterAsked ? ' (who asked you)' : ''} is at `
+      + `${frame.fmt(p.x, p.y, p.z)}${where ? ` (in ${where})` : ''}.`;
+  }
+
+  /** The online player a tool call means: the named one, else whoever asked, else the connected player. */
+  async function whichPlayer(name) {
+    if (name) {
+      const online = await players.listPlayers(bridge);
+      const match = players.matchPlayer(online, name);
+      if (!match) throw new Error(`no player called "${name}" is online. Online: ${online.join(', ') || 'nobody'}`);
+      return match;
+    }
+    return requester || bridge.player;
   }
 
   /** How the robot's pose reads to the model after a move or turn. */
@@ -125,15 +142,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     return `unknown (${res.statusMessage})`;
   }
 
-  async function playerPosition() {
-    const res = await bridge.sendCommand('querytarget @s', { quiet: true });
-    try {
-      const p = JSON.parse(res.body.details)[0];
-      return { x: Math.floor(p.position.x), y: Math.floor(p.position.y), z: Math.floor(p.position.z), yRot: p.yRot };
-    } catch {
-      return null;
-    }
-  }
+
 
   /** Run `agent <verb> <direction>` and report what changed in that cell. */
   async function actOnCell(verb, direction, extra = '') {
@@ -204,7 +213,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'get_status',
-    description: 'Where the robot and the player are, which way the robot faces, and what is directly around the robot. Cheap: call it whenever you are unsure.',
+    description: 'Where the robot and every player online are, which way the robot faces, and what is directly around the robot. Cheap: call it whenever you are unsure.',
     parameters: { type: 'object', properties: {} },
     async run() {
       const lines = [];
@@ -212,19 +221,21 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         + `${worlds.current ? `, in the world "${worlds.current.name}"` : ''}.`);
       const pose = await getAgentPose(bridge);
       const frame = await frameNow(pose);
-      const where = (p) => (worlds.current && worlds.current.describeAreasAt(p.x, p.y, p.z)) || null;
-      lines.push(`Robot: at ${frame.here()}${where(pose) ? `, in ${where(pose)}` : ''}.`
+      const here = worlds.current && worlds.current.describeAreasAt(pose.x, pose.y, pose.z);
+      lines.push(`Robot: at ${frame.here()}${here ? `, in ${here}` : ''}.`
         + ` Its forward is ${compassName(pose.facing)}: ${orientationText(pose.facing)}.`);
       const around = await Promise.all(DIRECTIONS.map(async (d) => {
         const [dx, dy, dz] = offsetOf(d, pose.facing);
         return `${d}: ${await blockAt(pose.x + dx, pose.y + dy, pose.z + dz)}`;
       }));
       lines.push(`Next to the robot: ${around.join(', ')}.`);
-      const player = await playerPosition();
-      if (player) {
+      const everyone = await players.allPlayers(bridge);
+      for (const player of everyone) {
         const dist = Math.hypot(player.x - pose.x, player.y - pose.y, player.z - pose.z);
-        lines.push(`Player ${bridge.player || ''}: ${frame.fmt(player.x, player.y, player.z)} (roughly; this may be eye height), `
-          + `${dist.toFixed(1)} blocks from the robot${where(player) ? `, in ${where(player)}` : ''}.`);
+        const tags = [player.name === requester && requesterAsked ? 'asked you' : '', player.name === bridge.player ? 'at the Ptolemy PC' : '']
+          .filter(Boolean).join(', ');
+        lines.push(`Player ${player.name}${tags ? ` (${tags})` : ''}: ${frame.fmt(player.x, player.y, player.z)} `
+          + `(roughly; this may be eye height), ${dist.toFixed(1)} blocks from the robot${areaOf(player) ? `, in ${areaOf(player)}` : ''}.`);
       }
       const s = sight();
       if (s) {
@@ -373,7 +384,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     parameters: {
       type: 'object',
       properties: {
-        target: { type: 'string', enum: ['position', 'player', 'area'], description: '"position" (default): the position given below. "player": next to the player. "area": the middle of a named area.' },
+        target: { type: 'string', enum: ['position', 'player', 'area'], description: '"position" (default): the position given below. "player": to a player (see player). "area": the middle of a named area.' },
+        player: { type: 'string', description: 'With target "player": which player, by name. Default: the player who asked you.' },
         ...POSITION_PROPS,
         area: { type: 'string', description: 'Name of the area, with target "area".' },
         precision: { type: 'string', enum: ['near', 'exact'], description: '"near": stop somewhere around the target (beside, diagonal or 2 '
@@ -388,7 +400,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
       let args;
       const start = await frameNow();
       const given = start.parse(params);
-      if (target === 'player') args = ['@p'];
+      if (target === 'player') args = ['@p', await whichPlayer(params.player)];
       else if (target === 'area' || (area && !given)) {
         const a = memory().findArea(area);
         if (!a) throw new Error(`there's no area called "${area}"`);
@@ -420,12 +432,20 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
 
   add({
     name: 'teleport_to_player',
-    description: 'Instantly teleport the robot to the player (agent tp). ONLY when the player explicitly asked for a teleport in '
+    description: 'Instantly teleport the robot to a player (agent tp). ONLY when the player explicitly asked for a teleport in '
       + 'this request. Otherwise walk with go_to, and say so if you can\'t get there.',
     flight: true,
-    parameters: { type: 'object', properties: {} },
-    async run() {
-      const res = await bridge.sendCommand('agent tp');
+    parameters: { type: 'object', properties: { player: { type: 'string', description: 'Which player, by name. Default: the player who asked you.' } } },
+    async run({ player: wanted }) {
+      const name = await whichPlayer(wanted);
+      let res;
+      if (!name || name === bridge.player) {
+        res = await bridge.sendCommand('agent tp'); // the agent's owner: the connected player
+      } else {
+        const p = await players.playerPosition(bridge, name);
+        if (!p) throw new Error(`can't find ${name}`);
+        res = await bridge.sendCommand(`agent tp ${p.x} ${p.y} ${p.z}`);
+      }
       const pose = await getAgentPose(bridge);
       navigator.agentMoved(pose);
       const frame = await frameNow(pose);
@@ -709,6 +729,9 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   // Flying and teleporting only when the person explicitly asked for it (see the pilot); MCP clients
   // are trusted with both. Set per call by call(); read by run_command.
   let allowFlight = true;
+  // Who this request is for: the chat sender, or the connected player for WebUI requests. Set per call.
+  let requester = null;
+  let requesterAsked = false;
 
   /** The tools currently enabled by the settings; without `flight`, no teleporting and no flying. */
   function list({ flight = true } = {}) {
@@ -726,12 +749,14 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
    * Run a tool by name. Never throws: errors come back as { ok: false, text } so the model can
    * read them and try something else.
    */
-  async function call(name, args, { signal, origin = 'LLM', flight = true } = {}) {
+  async function call(name, args, { signal, origin = 'LLM', flight = true, player = null } = {}) {
     if (!flight && (tools.some((t) => t.name === name && t.flight) || (name === 'go_to' && args && args.fly))) {
       log(`${origin} → ${name} refused: flying/teleporting wasn't asked for`);
       return { ok: false, text: NO_FLIGHT };
     }
     allowFlight = flight;
+    requester = player || bridge.player;
+    requesterAsked = Boolean(player);
     const tool = list().find((t) => t.name === name);
     if (!tool) {
       const known = tools.some((t) => t.name === name);

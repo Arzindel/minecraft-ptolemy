@@ -352,7 +352,7 @@ class WebServer {
           + 'without a radius, the configured default), '
           + '#inflight <n> (how many commands may be outstanding at once), '
           + '#pathfind <x y z | @p> [near|exact] (plan a route that stays next to blocks; ~ = relative to the agent; near = stop '
-          + 'somewhere around the target, on the ground if possible; @p is near unless you say exact), '
+          + 'somewhere around the target, on the ground if possible; @p is near unless you say exact; @p <name> for another player), '
           + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=7] [retries=3] (plan and walk, '
           + 'rescanning on the way), #flypathfind / #flypathwalk / #flypathfindwalk (the same, flying straight), '
           + '#pathsafe on|off, #pathstop, '
