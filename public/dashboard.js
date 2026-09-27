@@ -297,4 +297,45 @@
   setInterval(() => { if (data.wonder && data.wonder.nextAt) renderNow(); }, 1000);
 
   renderMemory();
+
+  // --- Card sizes: fill the dashboard exactly --------------------------------------
+  // The dashboard's height comes from the window. Cards are laid out in as few rows as fit there
+  // without shrinking below --card-min-height (using more, narrower columns if needed, down to
+  // MIN_CARD_WIDTH), and all share the height that fills it exactly: no scrollbar for the whole
+  // dashboard. Only when even that can't fit (a small window, or zoomed in a lot) do cards stop at
+  // the minimum and the dashboard scrolls.
+
+  const MIN_CARD_WIDTH = 220;
+  const PREFERRED_CARD_WIDTH = 340;
+  const stacked = window.matchMedia('(max-width: 1100px)'); // narrow layout: the page scrolls anyway
+
+  function fitCards() {
+    if (stacked.matches) {
+      root.style.removeProperty('grid-template-columns');
+      root.style.setProperty('--card-height', '260px');
+      return;
+    }
+    const style = getComputedStyle(root);
+    const gap = parseFloat(style.rowGap) || 0;
+    const colGap = parseFloat(style.columnGap) || 0;
+    const min = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-min-height')) || 160;
+    const width = root.clientWidth;
+    const height = root.parentElement.clientHeight; // .robot-top
+    // Grid cells the cards need (the Areas card is two wide).
+    const cells = [...root.children].reduce((n, c) => n + (c.classList.contains('card-areas') ? 2 : 1), 0);
+    const colsFor = (w) => Math.max(1, Math.floor((width + colGap) / (w + colGap)));
+    const rowsFitting = Math.max(1, Math.floor((height + gap) / (min + gap)));
+    // Enough columns for the rows that fit, at least as many as the preferred width gives, at most as many as the minimum allows.
+    const cols = Math.min(colsFor(MIN_CARD_WIDTH), Math.max(colsFor(PREFERRED_CARD_WIDTH), Math.ceil(cells / rowsFitting)));
+    const rows = Math.ceil(cells / cols);
+    const cardHeight = Math.max(min, Math.floor((height - gap * (rows - 1)) / rows));
+    root.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    root.style.setProperty('--card-height', `${cardHeight}px`);
+  }
+
+  new ResizeObserver(fitCards).observe(root.parentElement);
+  new ResizeObserver(fitCards).observe(root);
+  stacked.addEventListener('change', fitCards);
+  document.addEventListener('ptolemy:tab', () => requestAnimationFrame(fitCards));
+  requestAnimationFrame(fitCards);
 })();
