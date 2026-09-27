@@ -1,7 +1,5 @@
 'use strict';
 
-const { selectorName } = require('./players');
-
 // Mobs, animals, players and dropped items near a point. Bedrock has no single command that says
 // "what is where", so the answers of a few commands are stitched together by each entity's uniqueId:
 //   querytarget @e[...]              where every entity is (uniqueId, position), but not what it is
@@ -17,8 +15,10 @@ const MAX_RADIUS = 48;
 const WHAT = ['blocks', 'entities', 'both'];
 const MAX_NAMES = 16; // distinct names looked up per call; the rest stay "unidentified"
 const NO_TARGETS = /no targets matched/i;
-// The robot itself (and other players' agents) and experience orbs are never worth listing.
-const NOT = 'type=!agent,type=!xp_orb';
+// Names that are also command keywords break a selector ("type=!agent" is a syntax error), so the
+// robot and experience orbs are left out after the fact instead of in the selector.
+const KEYWORDS = new Set(['agent']);
+const HIDDEN_NAMES = /^experience orb$/i;
 
 /** `@e[...]` around a center, with extra selector arguments. */
 function selector({ x, y, z }, radius, extra = '') {
@@ -69,7 +69,7 @@ function typeGuess(name) {
   const key = /^%?entity\.([\w:]+)\.name$/.exec(name);
   if (key) return key[1].replace(/^minecraft:/, '');
   const id = name.trim().toLowerCase().replace(/[\s-]+/g, '_');
-  return /^[a-z][a-z_]*$/.test(id) ? id : null;
+  return /^[a-z][a-z_]*$/.test(id) && !KEYWORDS.has(id) ? id : null;
 }
 
 /**
@@ -80,7 +80,7 @@ function typeGuess(name) {
 async function nearbyEntities(bridge, center, radius) {
   const mid = { x: center.x + 0.5, y: center.y + 0.5, z: center.z + 0.5 };
   const send = (cmd) => bridge.sendCommand(cmd, { quiet: true });
-  const all = `${NOT},c=${MAX_ENTITIES}`;
+  const all = `c=${MAX_ENTITIES + 1}`; // +1: the robot itself is among them
   const [baseRes, namesRes, hostileRes, itemRes, playerRes] = await Promise.all([
     send(`querytarget ${selector(mid, radius, all)}`),
     send(`testfor ${selector(mid, radius, all)}`),
@@ -102,7 +102,8 @@ async function nearbyEntities(bridge, center, radius) {
   // Look each distinct name up by name and by type, all at once.
   const names = [...new Set(parseNames(namesRes))].slice(0, MAX_NAMES);
   const lookups = names.flatMap((name) => {
-    const list = [{ name, by: 'name', cmd: `querytarget ${selector(mid, radius, `${NOT},name=${selectorName(name)}`)}` }];
+    const quoted = `"${name.replace(/["\\]/g, '')}"`; // always quoted, so a name can't read as a keyword
+    const list = [{ name, by: 'name', cmd: `querytarget ${selector(mid, radius, `name=${quoted}`)}` }];
     const type = typeGuess(name);
     if (type) list.push({ name, by: 'type', type, cmd: `querytarget ${selector(mid, radius, `type=${type}`)}` });
     return list;
@@ -121,7 +122,13 @@ async function nearbyEntities(bridge, center, radius) {
     });
   }
 
-  const entities = [...found.values()].map((e) => {
+  // The robot itself: whatever stands in its own cell, unless it turned out to be something else.
+  const self = [...found.values()].find((e) => Math.floor(e.x) === center.x && Math.floor(e.z) === center.z
+    && Math.abs(e.y - center.y) < 1 && !e.player && !e.item && (!e.name || /agent/i.test(e.name)));
+  if (self) found.delete(self.id);
+  for (const [id, e] of found) if (e.name && HIDDEN_NAMES.test(e.name)) found.delete(id);
+
+  const entities = [...found.values()].slice(0, MAX_ENTITIES).map((e) => {
     const distance = Math.hypot(e.x - mid.x, e.y - center.y, e.z - mid.z);
     return {
       id: e.id,
