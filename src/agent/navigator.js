@@ -18,8 +18,11 @@ const END_SCAN_RADIUS = 4;
 // How #pathfindwalk / go_to find their way (method=... picks one; auto: surface when walking, rescan when flying).
 const METHODS = {
   surface: 'surveying the ground first',
+  lookahead: 'looking ahead where the plan meets the unknown, before moving',
   rescan: 'rescanning around the robot at the edge of what it knows',
 };
+// Look-ahead: the cube scanned (unseen cells only) where the plan first meets the unknown.
+const LOOK_RADIUS = 3;
 const SAFE_POLL_MS = 100;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -127,7 +130,7 @@ class Navigator {
   }
 
   async _pathfindwalk(kind, args, { scanRadius: radius, retries, fly, near, method = 'auto' }) {
-    const how = method === 'auto' ? (fly ? 'rescan' : 'surface') : method;
+    let how = method === 'auto' ? (fly ? 'lookahead' : 'surface') : method;
     if (!METHODS[how]) throw new Error(`unknown method "${method}" (auto, ${Object.keys(METHODS).join(', ')})`);
     // Look around first: the whole rescan radius for the old way, a small cube otherwise (the ground
     // survey and the path checks see the rest).
@@ -144,13 +147,23 @@ class Navigator {
     let failures = 0;
     let replans = 0;
     let checks = 0;
+    let looks = 0;
+    const maxLooks = Math.ceil(distance / LOOK_RADIUS) + 10;
     this.log(`Heading to ${describeGoal(goal)}, ${round(distance)} blocks away, ${METHODS[how]} `
       + `(up to ${retries} retries and ${maxRescans} rescans of radius ${radius}).`);
     // A trip between two places under open sky stays on the surface: unseen cells below the measured
     // ground are planned as solid (see planPath's `underground`).
     // (An end under a roof is fine: the cells around it were scanned, and known cells beat guesses.)
     if (how === 'surface') await this._surveyWay(pose, goal);
-    const overGround = how === 'surface';
+    if (how === 'lookahead') {
+      // A target in the unknown: look around it first, so the plan starts filling in from both ends.
+      const around = unknownAround(this.world, goal, LOOK_RADIUS);
+      if (around.length) {
+        await checkCells(this.bridge, this.world, around);
+        this.log(`Looking ahead: ${around.length} unseen cells around the target first.`);
+      }
+    }
+    let overGround = how === 'surface';
 
     for (;;) {
       // A target that turned out to be solid once seen means "go next to it".
@@ -158,7 +171,15 @@ class Navigator {
         goal = { ...goal, cells: cellsAround(goal.x, goal.y, goal.z) };
       }
       let plan = planPath(this.world, pose, goal, { ...this._planOptions(fly), underground: !overGround });
-      if (plan.error && overGround) plan = planPath(this.world, pose, goal, this._planOptions(fly)); // maybe a way through a cave
+      if (plan.error && overGround) {
+        // No way over the surface as guessed (say, the target is in a cave): look ahead instead.
+        plan = planPath(this.world, pose, goal, this._planOptions(fly));
+        if (!plan.error) {
+          overGround = false;
+          how = 'lookahead';
+          this.log(`No way over the ground as measured, so ${METHODS.lookahead} instead.`);
+        }
+      }
       if (plan.error) {
         this._setPath(kind, null);
         this.log(`Stopped: no path to ${describeGoal(goal)} from ${describePose(pose)}: ${plan.error}.`);
@@ -174,6 +195,23 @@ class Navigator {
       // seen, or only "clear" by the ground survey: they may be leaves or water), then plan again
       // with what they turned out to be. Cheap: one command per cell, all in one go.
       const unseen = (st) => st.enters && (how === 'rescan' ? st.unknown : !this.world.verified(...st.enters));
+
+      // Method 3, before moving: where the plan meets the unknown, scan the unseen cells around that
+      // spot and plan again, alternating between the robot's end of the plan and the target's end, so
+      // both sides fill in until they meet.
+      if (how === 'lookahead' && looks < maxLooks) {
+        const unknown = plan.steps.filter((st) => st.enters && this.world.state(...st.enters) === 'unknown');
+        if (unknown.length) {
+          const at = unknown[looks % 2 ? unknown.length - 1 : 0].enters;
+          looks++;
+          const cells = unknownAround(this.world, { x: at[0], y: at[1], z: at[2] }, LOOK_RADIUS);
+          await checkCells(this.bridge, this.world, cells);
+          this.log(`Looking ahead: ${cells.length} unseen cells around ${at.join(' ')}, `
+            + `${looks % 2 ? 'the first' : 'the last'} unknown spot on the plan (${looks}/${maxLooks}).`);
+          continue;
+        }
+      }
+
       if (how !== 'rescan' && checks < MAX_CHECKS) {
         // The cells the path goes through, and the ones beside and below them that hold the robot up
         // there (the plan may have leaned on a guess: a wall or a bank that isn't really there).

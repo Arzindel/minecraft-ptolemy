@@ -530,11 +530,13 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       // The pathfinder talks in world coordinates: put them in the model's frame, as seen from where the robot ended up.
       // One line per rescan or path check on the way is noise for the model: count them instead.
       const noise = (l) => l.startsWith('Entering unknown territory') || l.startsWith('Checking the path')
-        || l.startsWith('Re-planning');
+        || l.startsWith('Re-planning') || l.startsWith('Looking ahead');
       const rescans = lines.filter((l) => l.startsWith('Entering unknown territory')).length;
       const checks = lines.filter((l) => l.startsWith('Checking the path')).length;
+      const aheads = lines.filter((l) => l.startsWith('Looking ahead')).length;
       const told = lines.filter((l) => !noise(l));
-      const looked = [checks && `checked the path ${checks} time(s) before walking it`, rescans && `rescanned ${rescans} time(s) on the way`]
+      const looked = [aheads && `looked ahead ${aheads} time(s) where the plan met the unknown`,
+        checks && `checked the path ${checks} time(s) before walking it`, rescans && `rescanned ${rescans} time(s) on the way`]
         .filter(Boolean);
       if (looked.length) told.splice(1, 0, `Looked ahead: ${looked.join(', ')}.`);
       let text = `${told.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;

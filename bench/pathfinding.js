@@ -11,7 +11,7 @@ const { makeTerrain, setup } = require('./sim');
 const { isSolid } = require('../public/blocks');
 
 const SEEDS = [1, 2, 3, 4, 5, 6];
-const METHODS = (process.env.METHODS || 'rescan,surface').split(',');
+const METHODS = (process.env.METHODS || 'rescan,surface,lookahead').split(',');
 const PLAYER = { x: -58, z: 81 };
 const START = { x: -118, z: 76 };
 
@@ -40,11 +40,31 @@ const SCENARIOS = {
   'wall 71 wide (2 tries)': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.02, walls: wall(seed, 35, 30) }), tries: 2 }),
   'wall appears mid-walk': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.04 }), dropWall: true }),
   'river on the way': (seed) => ({ terrain: makeTerrain({ seed, trees: 0.03, river: { x0: -96, x1: -84, bed: 86, level: 93 } }) }),
+  'cave tunnel': (seed) => {
+    const terrain = makeTerrain({ seed, trees: 0.02 });
+    const y = 80;
+    tunnel(terrain, y, [[-118, 76], [-88, 76], [-88, 90], [-70, 90], [-70, 81], [-58, 81]]);
+    return { terrain, start: { x: -118, y, z: 76 }, player: { x: PLAYER.x, y, z: PLAYER.z } };
+  },
   'player in a house': (seed) => {
     const terrain = makeTerrain({ seed, trees: 0.02 });
     return { terrain, player: house(terrain, PLAYER.x, PLAYER.z) };
   },
 };
+
+/** A tunnel 1 wide and 2 tall at height y, through the corners [x, z] given in order. */
+function tunnel(terrain, y, corners) {
+  for (let i = 1; i < corners.length; i++) {
+    const [x0, z0] = corners[i - 1];
+    const [x1, z1] = corners[i];
+    for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) {
+      for (let z = Math.min(z0, z1); z <= Math.max(z0, z1); z++) {
+        terrain.edits.set(`${x},${y},${z}`, 'Air');
+        terrain.edits.set(`${x},${y + 1},${z}`, 'Air');
+      }
+    }
+  }
+}
 
 /** A 7x7 plank house with its door on the far side (east), around (cx, cz); returns where to stand inside. */
 function house(terrain, cx, cz) {
