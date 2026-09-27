@@ -20,8 +20,8 @@ class McpServer {
    * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
    * @param {import('../world/manager').WorldManager} [deps.worlds]
    */
-  constructor({ toolbox, settings, bridge, worlds }) {
-    Object.assign(this, { toolbox, settings, bridge, worlds });
+  constructor({ toolbox, settings, bridge, worlds, commands }) {
+    Object.assign(this, { toolbox, settings, bridge, worlds, commands });
   }
 
   /** Handle an HTTP request to /mcp. */
@@ -137,6 +137,7 @@ class McpServer {
         const memory = this.worlds && this.worlds.current ? this.worlds.current.promptBlock(frame) : '';
         const text = `${systemPrompt({
           name: this.settings.get('chat.name') || 'Ptolemy',
+          commands: this.commands ? this.commands.promptCommands() : [],
           player: this.bridge.player,
           instructions: this.settings.get('llm.instructions'),
           tools: this.toolbox.list(),

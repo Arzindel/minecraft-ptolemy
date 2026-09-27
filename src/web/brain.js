@@ -9,6 +9,7 @@ const { listModels } = require('../llm/client');
 const { testEndpoint, testModel, testTools } = require('../llm/tests');
 const { WorldManager } = require('../world/manager');
 const { McpServer } = require('../mcp/server');
+const { CommandCatalog } = require('../commands');
 const { getAgentPose } = require('../agent/pose');
 const { allPlayers } = require('../agent/players');
 
@@ -43,9 +44,14 @@ class Brain {
       activity: () => this.pilot.touch(),
       setWonder: (mode) => this.wonder.setMode(mode),
     });
-    this.pilot = new Pilot({ settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds });
+    // Commands tab: editable descriptions of the tools (what the model reads), # and / commands.
+    this.commands = new CommandCatalog({ tools: this.toolbox.tools });
+    this.toolbox.setDescriber((t) => this.commands.toolDescription(t.name, t.description));
+    this.commands.on('change', () => this.broadcast(this.commands.message()));
+
+    this.pilot = new Pilot({ settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands });
     this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds });
-    this.mcp = new McpServer({ toolbox: this.toolbox, settings, bridge, worlds: this.worlds });
+    this.mcp = new McpServer({ toolbox: this.toolbox, settings, bridge, worlds: this.worlds, commands: this.commands });
 
     this.pilot.on('entry', (entry) => this.broadcast({ type: 'pilotEntry', entry }));
     this.pilot.on('cleared', () => this.broadcast({ type: 'pilotTranscript', entries: this.pilot.transcript }));
@@ -102,6 +108,7 @@ class Brain {
   initialMessages() {
     return [
       this.endpoints.message(),
+      this.commands.message(),
       { type: 'pilotTranscript', entries: this.pilot.transcript },
       this.pilot.state(),
       this.wonder.state(),
@@ -163,6 +170,16 @@ class Brain {
         return true;
       case 'pilotReset':
         this.pilot.reset();
+        return true;
+      case 'commandEdit':
+        try {
+          this.commands.update(msg.kind, msg.name, msg);
+        } catch (err) {
+          reply({ type: 'memoryError', message: err.message });
+        }
+        return true;
+      case 'commandsReset':
+        this.commands.resetAll();
         return true;
       case 'wonderMode':
         this.wonder.setMode(msg.mode);

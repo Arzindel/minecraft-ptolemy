@@ -8,7 +8,7 @@
  * start of a prompt (LM Studio, llama.cpp, Anthropic) can reuse it. Everything that changes from
  * call to call (positions, memory, where the request came from) goes in contextBlock() instead.
  */
-function systemPrompt({ player, instructions, tools, textMode, name = 'Ptolemy' }) {
+function systemPrompt({ player, instructions, tools, textMode, name = 'Ptolemy', commands = [] }) {
   const parts = [`You are ${name}, the pilot of a small robot (the Minecraft "agent") in a Minecraft Bedrock world. \
 You control it only through your tools. You live with ${player || 'the player'}, who talks to you from the Ptolemy WebUI or \
 the in-game chat.
@@ -94,6 +94,12 @@ Keep it short and plain: no markdown, no lists. A quick word while you work is f
 - When the task is done (or impossible), stop calling tools and answer with one or two sentences saying what you did \
 or what went wrong. That answer ends your turn.`];
 
+  // Minecraft commands the model may use through run_command (chosen and described in the Commands tab).
+  if (commands.length && (!tools || tools.some((t) => t.name === 'run_command'))) {
+    parts.push(`# Minecraft commands for run_command
+Besides your tools, these Minecraft commands are useful with run_command (no leading slash, world coordinates only):
+${commands.map((c) => `- ${c.cmd}${c.usage ? ` ${c.usage}` : ''}: ${c.description}`).join('\n')}`);
+  }
   if (textMode) parts.push(textToolInstructions(tools));
   if (instructions && instructions.trim()) parts.push(`# Extra instructions from the player\n${instructions.trim()}`);
   return parts.join('\n\n');

@@ -79,6 +79,7 @@
       case 'memory':
       case 'memoryError':
       case 'positions':
+      case 'commands':
         // For the Nanny Cam, the Automatic tab and the Configuration tab.
         document.dispatchEvent(new CustomEvent(`ptolemy:${msg.type}`, { detail: msg }));
         break;

@@ -825,15 +825,22 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   let requester = null;
   let requesterAsked = false;
 
+  // Descriptions can be edited in the WebUI's Commands tab (see src/commands.js).
+  let describe = (t) => t.description;
+  function setDescriber(fn) {
+    describe = fn;
+  }
+
   /** The tools currently enabled by the settings; without `flight`, no teleporting and no flying. */
   function list({ flight = true } = {}) {
     return tools.filter((t) => (!t.raw || settings.get('tools.allowRaw'))
       && (!t.destructive || settings.get('tools.allowDestructive'))
       && (flight || !t.flight))
       .map((t) => {
-        if (flight || !t.parameters.properties || !t.parameters.properties.fly) return t;
+        const described = { ...t, description: describe(t) };
+        if (flight || !t.parameters.properties || !t.parameters.properties.fly) return described;
         const { fly, ...props } = t.parameters.properties;
-        return { ...t, parameters: { ...t.parameters, properties: props } };
+        return { ...described, parameters: { ...t.parameters, properties: props } };
       });
   }
 
@@ -871,7 +878,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
     navigator.stop({ quiet: true });
   }
 
-  return { list, call, tools, stopRobot };
+  return { list, call, tools, stopRobot, setDescriber };
 }
 
 /** A scan, told the way a model can use it. */

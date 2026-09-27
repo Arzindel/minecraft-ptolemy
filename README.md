@@ -458,7 +458,7 @@ The LLM sees all of it in its system prompt, and MCP clients can read it with `g
 
 ## The Robot tab
 
-The WebUI has two tabs: **Robot** and **Configuration**. The Robot tab puts everything on one screen:
+The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Robot tab puts everything on one screen:
 
 - **Top half: the dashboard**, scrollable. Each card keeps its own height, and long lists scroll inside
   the card.
@@ -475,6 +475,23 @@ The WebUI has two tabs: **Robot** and **Configuration**. The Robot tab puts ever
 - **Bottom half: Automatic, the Manual console and the Nanny Cam,** side by side.
 
 On narrow windows everything stacks and the page scrolls.
+
+## The Commands tab
+
+A reference of everything that can be run, with every description editable. The edits change what's
+used:
+
+- **LLM tools:** the robot's tools with their parameters. The description is exactly what the model
+  (and MCP clients) read when deciding whether and how to use a tool, so editing it changes the robot's
+  behaviour. For example, "Pathfinding for long trips only. Prefer move for anything within 3 blocks."
+- **# console commands:** Ptolemy's own commands, with usage. The description is what `#help` prints.
+- **/ Minecraft commands:** game commands the robot works with. Ticking **In LLM prompt** lists that
+  command, with its description, in the system prompt as something the model may run through
+  `run_command`. By default that's `agent dropall`, `agent till`, `agent transfer` and `agent create`,
+  which have no dedicated tool.
+
+Edited entries are marked, **Default** puts one back, and **Reset all edits** puts back everything.
+Edits are saved in `data/commands.json`. There's a filter box at the top.
 
 ## MCP server
 
@@ -581,6 +598,7 @@ src/
   web/server.js          static file server, WebUI socket, console commands
   web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
   settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
+  commands.js            the Commands tab: tool, # and / command descriptions, and edits to them
   agent/                 scanning, world knowledge, pose, pathfinding, walking (Navigator),
                          and frame.js: the robot-relative coordinates the model sees
   world/manager.js       which world is open (the scoreboard marker), per-world folders
@@ -596,7 +614,7 @@ src/
   mcp/stdio.js           MCP over stdio, relaying to /mcp (npm run mcp)
 public/
   index.html, style.css, app.js   the WebUI
-  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js   the tabs
+  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js   the tabs and panels
   blocks.js              block colours / solidity
 abandoned-minimap-project/        old prototype, kept for reference only
 ```
