@@ -89,7 +89,6 @@ const SCHEMA = [
       + 'Think "how many ground steps would it rather walk than go through this". #flypathfind ignores these.',
     fields: [
       { key: 'cost.ground', label: 'Ground (solid block below)', default: 1 },
-      { key: 'cost.water', label: 'Water (the cell itself)', default: 5 },
       { key: 'cost.wall', label: 'Wall (beside, sharing a face)', default: 5 },
       { key: 'cost.groundEdge', label: 'Ground edge (below, sharing an edge)', default: 3 },
       { key: 'cost.wallDiagonal', label: 'Wall edge (level, sharing an edge)', default: 8 },
@@ -139,9 +138,12 @@ const SCHEMA = [
       { key: 'path.scanRadius', label: 'Rescan radius for #pathfindwalk', default: 7, min: 1, max: 15, step: 1,
         help: 'How far around the robot to scan when walking into unknown territory (7 = 15x15x15).' },
       { key: 'path.retries', label: 'Retries for #pathfindwalk', default: 3, min: 0, max: 50, step: 1 },
+      { key: 'path.surveyWidth', label: 'Ground survey half-width', default: 3, min: 0, max: 10, step: 1,
+        help: 'Before walking somewhere, the robot measures the ground along the way with gettopsolidblock (one command per '
+          + 'column): a strip this many blocks either side of the straight line (3 = 7 wide).' },
       { key: 'path.finalMultiplier', label: 'Final spot multiplier (approximate go_to)', default: 10, min: 0, max: 1000, step: 1,
         help: 'Where an approximate go_to stops costs this many times the walking cost of standing there: 10 on ground, 50 '
-          + 'in water or on a wall, 400 in midair with the default costs. So it would rather stop a little further away, on '
+          + 'on a wall, 400 in midair with the default costs. So it would rather stop a little further away, on '
           + 'solid ground, than right next to the target in the air.' },
       { key: 'path.nearSide', label: 'Approximate stop: beside the target', default: 10, min: 0, max: 1000, step: 1 },
       { key: 'path.nearDiagonal', label: 'Approximate stop: diagonal to the target', default: 15, min: 0, max: 1000, step: 1 },
@@ -202,7 +204,7 @@ class Settings extends EventEmitter {
     return this.values[key];
   }
 
-  /** Walking-path support costs as { ground, water, ... }. */
+  /** Walking-path support costs as { ground, wall, ... }. */
   costs() {
     const out = {};
     for (const key of FIELDS.keys()) if (key.startsWith('cost.')) out[key.slice(5)] = this.get(key);

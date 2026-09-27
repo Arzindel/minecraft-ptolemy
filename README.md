@@ -104,7 +104,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
-| `#pathfindwalk <x y z \| @p> [scan=7] [retries=3]` | Plan and walk, rescanning when entering unknown territory and re-planning when something is in the way |
+| `#pathfindwalk <x y z \| @p> [scan=7] [retries=3] [method=...]` | Plan and walk. See [Finding the way](#finding-the-way) for the methods; `go_to` uses the default |
 | `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
 | `#pathsafe on\|off` | On (default): if the agent isn't where it should be after a step, keep checking for up to 2s before calling it a failure. That costs nothing when steps succeed straight away. Off: check once |
 | `#pathstop` | Stop a running walk after the current step |
@@ -207,24 +207,24 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
 - **Vision while walking:** after each step, Vision looks at the cells just ahead on the path in the
   same flight as the position check. If something solid is now where the path goes (someone built a
   wall, a door closed), the robot re-plans from the map before bumping into it.
-- **Unseen cells are unknown**, neither air nor wall. The planner assumes it can walk through them:
-  an unseen cell costs a ground step plus the "unseen" penalty, whatever its height. `#pathfindwalk`
-  stops and rescans before entering one and re-plans with what's really there, so a cliff or a hill
-  just past the edge of Sight is found and handled as soon as the robot gets near. (An older version
-  guessed the terrain carried on flat, as last seen, and priced every unseen cell off that height as
-  flying. A target a few blocks higher or lower than the ground at the edge of Sight then looked like
-  a long flight, and the search gave up before finding any route.)
+- **Unseen cells are unknown**, neither air nor wall. Far from anything measured, the planner assumes
+  it can walk through them: an unseen cell costs a ground step plus the "unseen" penalty, whatever its
+  height, and the robot looks before going in. On a trip over the surface (see
+  [Finding the way](#finding-the-way)), unseen cells near measured ground are guessed from it instead:
+  below the ground they count as solid, above it they're priced like seen cells. Otherwise unseen cells
+  priced as flat ground at any height were cheaper than the real, bumpy ground next to them, and the
+  planner tunnelled through riverbanks and floated along just outside what it had measured.
 - **`#pathfind` vs `#flypathfind`:** the fly version takes the shortest route through the air (every
-  move costs 1). The plain version follows the path of least resistance for something that walks,
-  swims and climbs. Entering a cell costs by its best known support, and a cell in water always
-  costs the water price. Read the costs as "how many ground steps would it rather walk than go
+  move costs 1). The plain version follows the path of least resistance for something that walks
+  and climbs. Entering a cell costs by its best known support. Water counts as air: robots are heavy,
+  so the robot walks along the bottom of rivers and lakes, and a lakebed step costs a ground step.
+  Read the costs as "how many ground steps would it rather walk than go
   through this". Defaults are below; they're all adjustable in the Configuration tab. Turns cost 1.
 
   | Support | Solid block | Cost |
   | --- | --- | --- |
   | Ground | directly below | 1 |
   | Ground edge | below, sharing an edge | 3 |
-  | Water | the cell itself is water | 5 |
   | Wall | beside, sharing a face | 5 |
   | Wall edge | level, sharing an edge | 8 |
   | Ground corner | below, sharing only a corner | 10 |
@@ -233,16 +233,39 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
   | Ceiling corner | above, sharing only a corner | 20 |
   | Airborne | nothing around | 40 |
 
-  When every route is expensive (say, a target up in open air), the exact search gets a time budget
-  and then falls back to a greedier one. The plan says when it's such a quick estimate.
+  The search is A* with a small budget, then weighted A*: it trusts its distance estimate 2 times more
+  (then 3, then 8 if the budget runs out again), so the route is at most that many times dearer than
+  the best. Climbing and hugging walls cost more than the estimate assumes, so an exact search on a
+  60-block trip takes 1-3 seconds; weight 2 found the same routes in 0.05-0.2 s. The plan says when
+  it's such an estimate.
 - **Walking:** every step has an expected pose (position and facing). After each step Ptolemy runs
   `agent getposition`, and the walk stops at the first mismatch. With `#pathsafe on` it polls for up
   to 2 seconds first, in case moves turn out not to be instant.
-- **`#pathfindwalk`** scans first, then walks. Before entering unknown cells it stops, rescans and
-  re-plans. Those rescans are budgeted at ⌈2 × distance ÷ scan radius⌉ + 3, so a robot trying to get
-  into a closed box gives up. Since everything seen is kept, running it again carries on from where it
-  stopped (useful after a very long detour). When a step fails (someone closed the door), it marks that cell as
-  blocked, rescans and re-plans. That counts as a retry, and it hard-stops after `retries` failures.
+- **`#pathfindwalk`** looks first, plans, then walks; see [Finding the way](#finding-the-way). When a
+  step fails (someone closed the door), it marks that cell as blocked, rescans and re-plans. That
+  counts as a retry, and it hard-stops after `retries` failures.
+
+### Finding the way
+
+`#pathfindwalk` and `go_to` pick a method (`method=` on `#pathfindwalk`; `auto` by default):
+
+- **`surface`** (the default when walking): first **measure the ground** between the robot and the
+  target with `gettopsolidblock x y z`, which answers with the first block below y that isn't air,
+  leaves or water, in one command per column: a strip 7 wide (Ground survey half-width: 3) all the way,
+  a few hundred commands in one go. What it looked straight through is marked "clear" on the map:
+  probably free, but it can't see leaves or water. An end with something solid over it is indoors or
+  underground (the survey only saw the roof), so the unseen cells around it are scanned too. Then
+  **plan, and check the path**: `testforblock` on exactly the cells the path goes through that nobody
+  has actually seen (usually under a hundred, one flight). If any turned out to be in the way (leaves,
+  a log), plan again and check the new cells; a clear path is walked as it is. Unloaded chunks
+  (`gettopsolidblock` answers "No solid blocks under specified position") stay unknown.
+- **`rescan`** (the old way; the default when flying for now): walk what's known, and at the edge of it
+  rescan a cube around the robot (the rescan radius, 7 = 3,375 blocks) and re-plan. Rescans are
+  budgeted at ⌈2 × distance ÷ scan radius⌉ + 3, so a robot trying to get into a closed box gives up.
+  It is also what `surface` falls back to when checking the path doesn't settle.
+
+Everything seen is kept, so running either again carries on from where it stopped. `npm run bench`
+compares the methods on simulated trips.
 - **Stored paths:** walking and flight paths are stored separately (`#pathwalk` walks the one from
   `#pathfind`, `#flypathwalk` the one from `#flypathfind`). A stored path is only valid while the
   agent is at its start. It's dropped as soon as the agent moves (by hand, by a walk of the other
@@ -333,8 +356,8 @@ world − robot. The other facings are that, rotated (`src/agent/frame.js`).
   - diagonal: 15
   - 2 blocks away: 20
   - per block of height difference: 10
-  - **plus the final spot multiplier (10) × the walking cost of standing there:** 10 on ground, 50 in
-    water or clinging to a wall, 400 in midair with the default costs.
+  - **plus the final spot multiplier (10) × the walking cost of standing there:** 10 on ground, 50
+    clinging to a wall, 400 in midair with the default costs.
 
   So it would rather walk a few more blocks and stand on solid ground than stop beside the target in
   the air.

@@ -19,7 +19,7 @@ const HASH = [
   ['scan', '[radius] [blocks|entities|both]', 'Look around the agent. blocks: identify every block in a cube (radius 2 = 5x5x5, up to 15; without a radius, the configured default). entities: mobs, animals, players and dropped items (default 16 blocks, up to 48), with the raw replies behind the list. both (the default): the two at once. Both show up in the Nanny Cam.'],
   ['pathfind', '<x y z | @p [name]> [near|exact]', 'Plan a route that stays next to blocks. ~ = relative to the agent; @p = a player (near them unless exact).'],
   ['pathwalk', '', 'Walk the last planned route, checking the agent\'s position after every step.'],
-  ['pathfindwalk', '<x y z | @p [name]> [near|exact] [scan=7] [retries=3]', 'Plan and walk, rescanning when entering unknown ground and re-planning when blocked.'],
+  ['pathfindwalk', '<x y z | @p [name]> [near|exact] [scan=7] [retries=3] [method=auto|surface|rescan]', 'Plan and walk. surface (the default when walking): measure the ground along the way first and check the path before walking it; rescan: rescan around the robot at the edge of what it knows.'],
   ['flypathfind', '<x y z | @p [name]>', 'Like #pathfind, but the shortest route through the air.'],
   ['flypathwalk', '', 'Walk the last planned flight path.'],
   ['flypathfindwalk', '<x y z | @p [name]>', 'Like #pathfindwalk, flying.'],

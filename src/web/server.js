@@ -6,8 +6,8 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 const { scanAroundAgent, formatScan } = require('../agent/scan');
-const { WorldMap } = require('../world/map');
-const { Navigator, pathMessage } = require('../agent/navigator');
+const { WorldMap, CLEAR } = require('../world/map');
+const { Navigator, pathMessage, METHODS } = require('../agent/navigator');
 const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
 const {
@@ -356,7 +356,7 @@ class WebServer {
         return;
       case 'pathfindwalk':
       case 'flypathfindwalk': {
-        // #pathfindwalk x y z [scan=7] [retries=3]   (scan = rescan radius)
+        // #pathfindwalk x y z [scan=7] [retries=3] [method=auto]   (scan = rescan radius)
         const opts = {
           scanRadius: this.settings.get('path.scanRadius'),
           retries: this.settings.get('path.retries'),
@@ -365,10 +365,16 @@ class WebServer {
         const coords = [];
         for (const arg of args) {
           const m = /^(scan|retries)=(\d+)$/.exec(arg);
+          const how = /^method=(\w+)$/i.exec(arg);
           if (/^(near|exact)$/i.test(arg)) opts.near = arg.toLowerCase() === 'near';
+          else if (how) opts.method = how[1].toLowerCase();
           else if (!m) coords.push(arg);
           else if (m[1] === 'scan') opts.scanRadius = Number(m[2]);
           else opts.retries = Number(m[2]);
+        }
+        if (opts.method && opts.method !== 'auto' && !METHODS[opts.method]) {
+          say(`method= is one of: auto, ${Object.keys(METHODS).map((k) => `${k} (${METHODS[k]})`).join(', ')}.`);
+          return;
         }
         if (opts.scanRadius < 1 || opts.scanRadius > MAX_SCAN_RADIUS) {
           say(`scan= is the rescan radius, from 1 to ${MAX_SCAN_RADIUS}.`);
@@ -527,7 +533,7 @@ class WebServer {
     const r = MAP_VIEW_RADIUS;
     const cells = [];
     this.world.forEachIn([x - r, y - r, z - r], [x + r, y + r, z + r], (cx, cy, cz, name) => {
-      if (name !== 'Air') cells.push([cx, cy, cz, name]);
+      if (name !== 'Air' && name !== CLEAR) cells.push([cx, cy, cz, name]);
     });
     return { type: 'map', center: { x, y, z }, radius: r, agent: this.agent, time: Date.now(), ...packCells(cells) };
   }

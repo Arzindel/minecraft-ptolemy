@@ -504,10 +504,15 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly), near: nearDefault }));
       const frame = await frameNow();
       // The pathfinder talks in world coordinates: put them in the model's frame, as seen from where the robot ended up.
-      // One line per rescan on the way is noise for the model: count them instead.
+      // One line per rescan or path check on the way is noise for the model: count them instead.
+      const noise = (l) => l.startsWith('Entering unknown territory') || l.startsWith('Checking the path')
+        || l.startsWith('Re-planning');
       const rescans = lines.filter((l) => l.startsWith('Entering unknown territory')).length;
-      const told = lines.filter((l) => !l.startsWith('Entering unknown territory'));
-      if (rescans) told.splice(1, 0, `Looked around ${rescans} time(s) on the way, walking into unseen ground.`);
+      const checks = lines.filter((l) => l.startsWith('Checking the path')).length;
+      const told = lines.filter((l) => !noise(l));
+      const looked = [checks && `checked the path ${checks} time(s) before walking it`, rescans && `rescanned ${rescans} time(s) on the way`]
+        .filter(Boolean);
+      if (looked.length) told.splice(1, 0, `Looked ahead: ${looked.join(', ')}.`);
       let text = `${told.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;
       if (lines.some((l) => l.includes('boxed in'))) {
         const around = await Promise.all(DIRECTIONS.map(async (d) => {

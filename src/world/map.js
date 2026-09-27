@@ -22,6 +22,11 @@ const CELLS = SIZE * SIZE * SIZE;
 const MAX_COLUMNS_IN_RAM = 1024;
 const SAVE_DELAY_MS = 2000;
 const FILE_VERSION = 1;
+// A cell gettopsolidblock looked straight through: nothing solid by its rules, but it can't see
+// leaves, water or plants, so this may be one of those. Free for planning, but unverified: the
+// path through it is checked with testforblock before walking. Never drawn, never overwrites a
+// block actually seen.
+const CLEAR = '(clear)';
 
 // Numeric keys (faster than strings in the pathfinder's inner loop). Chunk x/z fit in 22 bits
 // (the world is 30M blocks wide), sub-chunk y in 6.
@@ -46,6 +51,7 @@ class WorldMap extends EventEmitter {
     this.columns = new Map(); // columnKey -> { cx, cz, subs: Set<cy>, seen: time, dirty }, most recently used last
     this.onDisk = new Set(); // columnKeys that have a file
     this.blocked = new Set(); // "x,y,z": cells a move failed to enter, until they're seen again
+    this.ground = new Map(); // columnKey-like "x,z" -> y of the ground block, as measured by a ground survey
     this._last = { key: null, cells: null }; // one-entry cache for the pathfinder
     this._dirty = new Set();
     this._savedPalette = 0;
@@ -94,6 +100,45 @@ class WorldMap extends EventEmitter {
 
   isWater(x, y, z) {
     return this.water[this._value(x, y, z)] || false;
+  }
+
+  /** Where a ground survey measured the ground in this column (y of the top solid block), or null. */
+  groundY(x, z) {
+    const y = this.ground.get(`${x},${z}`);
+    return y === undefined ? null : y;
+  }
+
+  setGround(x, z, y) {
+    this.ground.set(`${x},${z}`, y);
+  }
+
+  /** Every column in [x0..x1] x [z0..z1] whose ground a survey measured, as fn(x, z, y). */
+  forEachGround(x0, z0, x1, z1, fn) {
+    for (const [k, y] of this.ground) {
+      const comma = k.indexOf(',');
+      const x = Number(k.slice(0, comma));
+      const z = Number(k.slice(comma + 1));
+      if (x >= x0 && x <= x1 && z >= z0 && z <= z1) fn(x, z, y);
+    }
+  }
+
+  /** Has this cell's block actually been seen (not unknown, and not just "clear" by gettopsolidblock)? */
+  verified(x, y, z) {
+    const v = this._value(x, y, z);
+    return v !== 0 && this.palette[v - 1] !== CLEAR;
+  }
+
+  /** Mark cells as "clear" (see CLEAR), leaving alone any whose block is already known. */
+  setClear(cells) {
+    const v = this._valueOf(CLEAR);
+    for (const [x, y, z] of cells) {
+      if (y < -64 || y > 319) continue;
+      const block = this._cellsFor(x, y, z, true);
+      const i = indexOf(x, y, z);
+      if (block[i]) continue;
+      block[i] = v;
+      this._markDirty(this.columns.get(columnKey(x >> 4, z >> 4)));
+    }
   }
 
   /** Every known cell in a box (inclusive corners), as (x, y, z, name) calls. Air included. */
@@ -198,7 +243,7 @@ class WorldMap extends EventEmitter {
 
   _learn(name, v) {
     this.paletteIndex.set(name, v);
-    this.solid[v] = isSolid(name);
+    this.solid[v] = name !== CLEAR && isSolid(name);
     this.water[v] = /water/.test(blockId(name));
   }
 
@@ -340,4 +385,4 @@ class WorldMap extends EventEmitter {
   }
 }
 
-module.exports = { WorldMap };
+module.exports = { WorldMap, CLEAR };

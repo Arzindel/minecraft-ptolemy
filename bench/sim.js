@@ -12,8 +12,14 @@ const { Vision } = require(REPO + '/src/agent/vision');
 
 function hash(x, z, s = 0) { let h = (x * 374761393 + z * 668265263 + s * 982451653) | 0; h = (h ^ (h >>> 13)) * 1274126177; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
 
-function makeTerrain({ seed = 1, from = [-118, 93], to = [-58, 106], trees = 0.03, bumps = 3, walls = [] } = {}) {
+/**
+ * Terrain rising from `from` [x, height] to `to`, with bumps and trees. `river`: { x0, x1, bed, level }
+ * cuts a river across (ground at `bed`, water up to `level`) between x0 and x1.
+ */
+function makeTerrain({ seed = 1, from = [-118, 93], to = [-58, 106], trees = 0.03, bumps = 3, walls = [], river = null } = {}) {
+  const inRiver = (x) => river && x >= river.x0 && x <= river.x1;
   const height = (x, z) => {
+    if (inRiver(x)) return river.bed + (hash(x, z, seed) < 0.3 ? 1 : 0);
     const t = Math.max(0, Math.min(1, (x - from[0]) / (to[0] - from[0])));
     const base = from[1] + (to[1] - from[1]) * t;
     const n = Math.sin(x / 7 + seed) * bumps / 2 + Math.cos(z / 5 + seed * 2) * bumps / 2 + (hash(x >> 2, z >> 2, seed) - 0.5) * 2;
@@ -32,13 +38,14 @@ function makeTerrain({ seed = 1, from = [-118, 93], to = [-58, 106], trees = 0.0
     }
   };
   for (let x = from[0] - 40; x <= to[0] + 40; x++) for (let z = 20; z <= 140; z++) {
-    if (hash(x, z, seed + 7) < trees && hash(x >> 3, z >> 3, 99) < 0.7) addTree(x, z);
+    if (!inRiver(x) && hash(x, z, seed + 7) < trees && hash(x >> 3, z >> 3, 99) < 0.7) addTree(x, z);
   }
   for (const w of walls) edits.set(w.join(','), 'Stone');
   const block = (x, y, z) => {
     const e = edits.get(`${x},${y},${z}`);
     if (e) return e;
     const h = height(x, z);
+    if (y > h && inRiver(x) && y <= river.level) return 'Water';
     if (y > h) return 'Air';
     if (y === h) return 'Grass Block';
     return y > h - 3 ? 'Dirt' : 'Stone';
@@ -80,6 +87,20 @@ class FakeBridge {
     if (/^testfor @e/.test(cmd)) return ok(`Found ${(this.entities || []).map((e) => e.name).join(', ')}`, { victim: (this.entities || []).map((e) => e.name) });
     if (/^querytarget/.test(cmd)) return ok('', { details: JSON.stringify([{ position: { x: this.p.x + 0.5, y: this.p.y + 1.62, z: this.p.z + 0.5 }, yRot: 0 }]) });
     if (cmd === 'list') return ok('There are 1/10 players online:\nArzindel', { players: 'Arzindel' });
+    if ((m = /^gettopsolidblock (-?\d+) (-?\d+) (-?\d+)$/.exec(cmd))) {
+      // As measured in Bedrock: the first block strictly below y that isn't air, leaves or water
+      // (logs count); an error in unloaded chunks (here: more than 200 blocks from the player).
+      const [x, y, z] = [+m[1], +m[2], +m[3]];
+      const fail = { ok: false, statusCode: -2147352576, statusMessage: 'No solid blocks under specified position',
+        body: { statusCode: -2147352576, statusMessage: 'No solid blocks under specified position' } };
+      if (Math.abs(x - this.p.x) > 200 || Math.abs(z - this.p.z) > 200) return fail;
+      for (let yy = Math.min(y - 1, 319); yy >= -64; yy--) {
+        const b = this.t.block(x, yy, z);
+        if (b === 'Air' || b === 'Water' || /Leaves$/.test(b)) continue;
+        return ok('', { blockName: b.toLowerCase().replace(/ /g, '_'), position: { x, y: yy, z } });
+      }
+      return fail;
+    }
     if (/^tp /.test(cmd)) { this.log.push(['PLAYER TELEPORTED', cmd]); return ok('Teleported'); }
     return ok(`(fake) ${cmd}`);
   }
@@ -87,10 +108,10 @@ class FakeBridge {
 
 const DEFAULTS = {
   'path.scanRadius': 7, 'path.retries': 3, 'path.turnCost': 1, 'path.unknownPenalty': 0.5, 'path.finalMultiplier': 10,
-  'path.nearSide': 10, 'path.nearDiagonal': 15, 'path.nearFar': 20, 'path.nearHeight': 10, 'path.safe': false,
+  'path.surveyWidth': 3, 'path.nearSide': 10, 'path.nearDiagonal': 15, 'path.nearFar': 20, 'path.nearHeight': 10, 'path.safe': false,
   'scan.radius': 4, 'vision.radius': 1, 'vision.entityRadius': 9, 'vision.idleSeconds': 2, 'llm.coordinates': 'relative', 'tools.allowRaw': true, 'tools.allowDestructive': true,
 };
-const COSTS = { ground: 1, water: 5, wall: 5, groundEdge: 3, wallDiagonal: 8, groundCorner: 10, ceiling: 15, ceilingEdge: 20, ceilingCorner: 20, airborne: 40 };
+const COSTS = { ground: 1, wall: 5, groundEdge: 3, wallDiagonal: 8, groundCorner: 10, ceiling: 15, ceilingEdge: 20, ceilingCorner: 20, airborne: 40 };
 function fakeSettings(over = {}) {
   const v = { ...DEFAULTS, ...over };
   return { get: (k) => v[k], costs: () => ({ ...COSTS }), update: (p) => Object.assign(v, p) };
