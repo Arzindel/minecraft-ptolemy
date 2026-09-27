@@ -11,8 +11,13 @@ const { allPlayers } = require('../agent/players');
 const TRANSCRIPT_LIMIT = 300;
 const QUEUE_LIMIT = 5;
 const STREAM_FLUSH_MS = 120;
-// Flying and teleporting are only allowed when the request itself asks for them.
-const FLIGHT_WORDS = /\b(fly|flies|flying|flew|flight|teleport\w*|tp)\b/i; // how often streamed text is pushed to the WebUI
+// Flying and teleporting are each only allowed when the request itself asks for that one; asking to
+// fly is not asking to teleport. A word shortly after a negation ("not teleport", "don't tp") doesn't count,
+// and neither does the past tense ("you teleported me!" is a complaint, not a request).
+const FLY_WORDS = /\b(fly|flies|flying|flight)\b/gi;
+const TELEPORT_WORDS = /\b(teleport|teleports|teleporting|tp)\b/gi;
+// A negation up to four words before ("don't want you to teleport"); a comma or full stop ends it.
+const NEGATION = /\b(not|no|never|don'?t|do not|doesn'?t|didn'?t|won'?t|without|stop|quit|nor|instead of)\s+([\w']+\s+){0,4}$/i;
 // Tools whose result is a snapshot: once a newer one exists, the older ones are left out of the prompt.
 const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'get_memory', 'todo_write']);
 
@@ -166,7 +171,7 @@ class Pilot extends EventEmitter {
     this.abort = new AbortController();
     const { signal } = this.abort;
     const wondering = request.source === 'wonder';
-    const flight = !wondering && FLIGHT_WORDS.test(request.text);
+    const allowed = { fly: !wondering && asksFor(request.text, FLY_WORDS), teleport: !wondering && asksFor(request.text, TELEPORT_WORDS) };
     // Who "me" is: the chat sender, the person at the WebUI (the connected player), nobody while wondering.
     const requester = wondering ? null : request.sender || this.bridge.player || null;
     this._entry({ kind: 'user', text: request.text, source: request.source, sender: request.sender });
@@ -183,11 +188,11 @@ class Pilot extends EventEmitter {
       let step = 0;
       for (; step < maxSteps && !signal.aborted; step++) {
         const textMode = this._toolMode(config) === 'text';
-        const tools = this.toolbox.list({ flight });
+        const tools = this.toolbox.list(allowed);
         this._setPhase('thinking', `${config.label}${config.model ? ` · ${config.model}` : ''}`);
 
         // Fresh state for this call only: it rides on the newest message and is dropped from older ones.
-        turn[turn.length - 1].context = await this._context(request.source, flight, requester);
+        turn[turn.length - 1].context = await this._context(request.source, allowed, requester);
         const live = this._liveEntries(request.source);
 
         let reply;
@@ -241,7 +246,7 @@ class Pilot extends EventEmitter {
           const entry = this._entry({ kind: 'tool', name: call.name, args: call.args, pending: true });
           this._setPhase('tool', call.name);
           const res = await this.toolbox.call(call.name, call.args, {
-            signal, flight, player: requester, origin: wondering ? 'LLM (wondering)' : 'LLM',
+            signal, ...allowed, player: requester, origin: wondering ? 'LLM (wondering)' : 'LLM',
           });
           this.touch();
           const limit = this.settings.get('llm.toolResultChars');
@@ -298,7 +303,7 @@ class Pilot extends EventEmitter {
   }
 
   /** The [Now] block: where the request came from, where things are (in the model's frame), and the memory. */
-  async _context(source, flight, requester) {
+  async _context(source, allowed, requester) {
     const memory = this.worlds.current;
     const inArea = (x, y, z) => {
       const where = memory && memory.describeAreasAt(x, y, z);
@@ -331,9 +336,12 @@ class Pilot extends EventEmitter {
         }
       } catch { /* not important */ }
     }
-    parts.push(flight
-      ? 'Flying and teleporting: allowed for this request (the player asked for it).'
-      : 'Flying and teleporting: NOT allowed for this request. Walk; if you can\'t get there on foot, say so.');
+    parts.push(allowed.fly
+      ? 'Flying (go_to with fly: true, moving block by block through the air): allowed for this request (the player asked for it).'
+      : 'Flying: NOT allowed for this request. Walk; if you can\'t get there on foot, say so.');
+    parts.push(allowed.teleport
+      ? 'Teleporting the robot (instantly, teleport_to_player or "agent tp x y z"): allowed for this request (the player asked for it).'
+      : `Teleporting: NOT allowed for this request${allowed.fly ? ' (being allowed to fly is not permission to teleport)' : ''}.`);
     return contextBlock({ source, status: parts.join('\n'), memory: memory && memory.promptBlock(frame) });
   }
 
@@ -512,4 +520,12 @@ class Pilot extends EventEmitter {
   }
 }
 
-module.exports = { Pilot };
+/** Does the text ask for this (a word from `words` not right after a negation)? */
+function asksFor(text, words) {
+  for (const m of String(text).matchAll(words)) {
+    if (!NEGATION.test(text.slice(Math.max(0, m.index - 30), m.index))) return true;
+  }
+  return false;
+}
+
+module.exports = { Pilot, asksFor };

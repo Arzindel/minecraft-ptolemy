@@ -61,8 +61,13 @@ function planPath(world, start, goal, {
   }
   const arrival = goal.arrival || null;
   if (!arrival && isGoal(start.x, start.y, start.z)) return { steps: [], cells: [[start.x, start.y, start.z]], unknownSteps: 0 };
-  if (isSealed(world, open, start)) {
+  const isStart = (x, y, z) => x === start.x && y === start.y && z === start.z;
+  if (isSealed(world, open, isStart)) {
     return { error: 'the target is sealed in: every way to it is blocked by known solid blocks' };
+  }
+  if (isSealed(world, [[start.x, start.y, start.z]], isGoal)) {
+    return { enclosed: true, error: 'the robot is boxed in: every way out of where it is is blocked by known solid blocks, '
+      + 'so it can\'t get anywhere without breaking one' };
   }
 
   // Keep the search inside a box around the start, the goal and what's known.
@@ -80,19 +85,20 @@ function planPath(world, start, goal, {
     && y >= Math.max(WORLD_MIN_Y, lo[1] - SEARCH_MARGIN) && y <= Math.min(WORLD_MAX_Y, hi[1] + SEARCH_MARGIN);
 
   // Cost of entering a cell when walking: its best support, counting only blocks known to be solid.
-  // An unseen cell is neither air nor wall: the terrain is assumed to carry on as last seen, so it
-  // costs a ground step at the walking height of the nearest scanned column and the airborne price
-  // above or below it (floating, or probably inside the ground). The walker rescans before entering
-  // unseen cells and re-plans with what's actually there, so a cliff just past the edge of Sight is
-  // found and climbed down, rather than flown over.
+  // An unseen cell costs a plain ground step (plus unknownPenalty, added by the search): nothing is
+  // known about the terrain there, so the planner assumes it can be walked, whatever its height.
+  // Guessing the terrain instead (e.g. "flat, as far as it was seen") made every unseen cell off that
+  // guess cost the airborne price, so a target a few blocks higher or lower than the ground at the
+  // edge of Sight looked like a long flight and the search ran out of budget before finding any
+  // route. The walker rescans before entering unseen cells and re-plans with what's actually there,
+  // so a cliff or a hill past the edge of Sight is found and handled as soon as the robot gets near.
   const supportCache = new Map();
   const supportCost = (x, y, z) => {
     const k = `${x},${y},${z}`;
     if (supportCache.has(k)) return supportCache.get(k);
     let best = costs.airborne;
     if (world.state(x, y, z) === 'unknown') {
-      const surface = world.surfaceNear(x, z, y);
-      if (surface === null || surface === y) best = costs.ground;
+      best = costs.ground;
     } else if (world.isWater(x, y, z)) {
       best = costs.water;
     } else {
@@ -195,15 +201,16 @@ function planPath(world, start, goal, {
 }
 
 /**
- * Flood outwards from the goal cells through free cells. If the fill runs out without touching
- * an unknown cell or the start, the goal is sealed off and searching for a route is pointless.
+ * Flood outwards from some cells through free cells. If the fill runs out without touching an
+ * unknown cell or a cell where `reached` is true, those cells are sealed off (the goal from the
+ * robot, or the robot from the goal) and searching for a route is pointless.
  */
-function isSealed(world, goalCells, start) {
-  const seen = new Set(goalCells.map((c) => c.join(',')));
-  const stack = [...goalCells];
+function isSealed(world, fromCells, reached) {
+  const seen = new Set(fromCells.map((c) => c.join(',')));
+  const stack = [...fromCells];
   while (stack.length) {
     const [x, y, z] = stack.pop();
-    if (x === start.x && y === start.y && z === start.z) return false;
+    if (reached(x, y, z)) return false;
     const state = world.state(x, y, z);
     if (state === 'unknown') return false;
     if (seen.size > FLOOD_LIMIT) return false; // big open area: let the search decide

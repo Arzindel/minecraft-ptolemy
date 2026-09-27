@@ -4,67 +4,50 @@ const { isSolid, blockId } = require('../../public/blocks');
 
 const key = (x, y, z) => `${x},${y},${z}`;
 
+// How many cells the robot remembers. A radius-7 scan is 3375 cells, so this is the last ~60 scans'
+// worth; past it the cells seen longest ago are forgotten first.
+const MAX_CELLS = 200000;
+
 /**
- * Everything the robot currently believes about the world, as the pathfinder sees it.
- * For now that's its Sight (the latest scan) plus cells it found blocked while walking;
- * Memory will plug in here later.
+ * Everything the robot currently believes about the world, as the pathfinder sees it: every cell
+ * its scans have seen (a newer scan overwrites what an older one said), plus cells it found
+ * blocked while walking. Keeping older scans matters when walking around something big, like a
+ * wall or a hill: if each scan replaced the last, the part of the wall seen before would be
+ * forgotten, and the planner would try that way again, back and forth along the wall.
  */
 class WorldKnowledge {
   constructor() {
-    this.sight = new Map(); // "x,y,z" -> block name, including Air
+    this.sight = new Map(); // "x,y,z" -> block name, including Air; oldest first
     this.blocked = new Set(); // cells a move failed to enter, until a scan sees them again
     this._bounds = null;
-    this._surfaces = new Map(); // "x,z" -> walking height of that known column (or null)
   }
 
+  /** Add a scan to what's known. */
   setSight(scan) {
-    this.sight = new Map();
-    this._bounds = null;
-    this._surfaces.clear();
     for (const c of scan.cells) {
-      if (c.block === '?') continue; // couldn't be identified: stays unknown
-      const k = key(c.x, c.y, c.z);
-      this.sight.set(k, c.block);
-      this.blocked.delete(k);
+      if (c.block === '?') continue; // couldn't be identified: stays as it was
+      this._set(key(c.x, c.y, c.z), c.block);
     }
+    this._prune();
+    this._bounds = null;
   }
 
   /** One cell seen outside a scan (e.g. after the robot broke or placed a block). */
   setBlock(x, y, z, block) {
     if (!block || block.startsWith('unknown')) return;
-    const k = key(x, y, z);
-    this.sight.set(k, block);
-    this.blocked.delete(k);
+    this._set(key(x, y, z), block);
     this._bounds = null;
-    this._surfaces.clear();
   }
 
   markBlocked(x, y, z) {
     this.blocked.add(key(x, y, z));
-    this._surfaces.clear();
   }
 
-  /**
-   * Walking height (the first free cell above solid ground) of the scanned column nearest to
-   * (x, z), assuming the terrain carries on beyond Sight as last seen. `nearY` picks which
-   * surface when a column has several (caves, overhangs). null when nothing solid is known there.
-   */
-  surfaceNear(x, z, nearY) {
-    const b = this.bounds();
-    if (!b) return null;
-    const cx = Math.min(b.max[0], Math.max(b.min[0], x));
-    const cz = Math.min(b.max[2], Math.max(b.min[2], z));
-    const ck = `${cx},${cz}`;
-    let surfaces = this._surfaces.get(ck);
-    if (!surfaces) {
-      surfaces = [];
-      for (let y = b.min[1]; y < b.max[1]; y++) {
-        if (this.state(cx, y, cz) === 'solid' && this.state(cx, y + 1, cz) === 'free') surfaces.push(y + 1);
-      }
-      this._surfaces.set(ck, surfaces);
-    }
-    if (!surfaces.length) return null;
-    return surfaces.reduce((best, s) => (Math.abs(s - nearY) < Math.abs(best - nearY) ? s : best));
+  /** Forget everything (another Minecraft world was opened). */
+  clear() {
+    this.sight.clear();
+    this.blocked.clear();
+    this._bounds = null;
   }
 
   /** 'free', 'solid' or 'unknown'. */
@@ -95,6 +78,22 @@ class WorldKnowledge {
     }
     this._bounds = { min, max };
     return this._bounds;
+  }
+
+  /** Re-inserting keeps the map ordered from least to most recently seen. */
+  _set(k, block) {
+    this.sight.delete(k);
+    this.sight.set(k, block);
+    this.blocked.delete(k);
+  }
+
+  _prune() {
+    if (this.sight.size <= MAX_CELLS) return;
+    let extra = this.sight.size - MAX_CELLS;
+    for (const k of this.sight.keys()) {
+      if (extra-- <= 0) break;
+      this.sight.delete(k);
+    }
   }
 }
 

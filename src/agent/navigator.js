@@ -115,9 +115,10 @@ class Navigator {
     let goal = await this._resolveGoal(args, pose, { near });
 
     // Rescans on the way into unknown territory are budgeted by distance, so a robot trying
-    // to get into a closed box gives up instead of looping forever.
+    // to get into a closed box gives up instead of looping forever. Everything seen is kept, so
+    // running it again carries on from where it stopped rather than starting over.
     const distance = Math.hypot(goal.x - pose.x, goal.y - pose.y, goal.z - pose.z);
-    const maxRescans = Math.max(1, Math.ceil((1.5 * distance) / radius));
+    const maxRescans = Math.ceil((2 * distance) / radius) + 3;
     let rescans = 0;
     let failures = 0;
     this.log(`Heading to ${describeGoal(goal)}, ${round(distance)} blocks away `
@@ -170,8 +171,9 @@ class Navigator {
 
       rescans++;
       if (rescans > maxRescans) {
-        this.log(`Giving up: ${maxRescans} rescans used without reaching ${describeGoal(goal)}, `
-          + `at ${describePose(pose)}. The target may be enclosed.`);
+        this.log(`Giving up for now: ${maxRescans} rescans used without reaching ${describeGoal(goal)}, `
+          + `at ${describePose(pose)}. The way may be long (a big wall or hill to go around) or the target enclosed. `
+          + 'What was seen is remembered, so trying again carries on from here.');
         return;
       }
       this.log(`Entering unknown territory at ${describePose(pose)}; rescanning (${rescans}/${maxRescans}).`);
