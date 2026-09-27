@@ -10,7 +10,9 @@ const { WorldKnowledge } = require('../agent/world');
 const { Navigator, pathMessage } = require('../agent/navigator');
 const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
-const { nearbyEntities, countsText, MAX_ENTITIES } = require('../agent/entities');
+const {
+  nearbyEntities, countsText, entityRadius, entitiesMessage, MAX_ENTITIES, MAX_RADIUS: MAX_ENTITY_RADIUS, WHAT,
+} = require('../agent/entities');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
 const { Brain } = require('./brain');
 
@@ -40,6 +42,7 @@ class WebServer {
     this.bridge = bridge;
     this.log = [];
     this.sight = null; // the latest scan, in the compact form sent to the Nanny Cam
+    this.entities = null; // the latest look for entities, also for the Nanny Cam
     this.world = new WorldKnowledge();
 
     // Tunables from the Configuration tab, saved in data/settings.json.
@@ -74,6 +77,7 @@ class WebServer {
       navigator: this.navigator,
       world: this.world,
       scan: (radius, opts) => this._scan(radius, opts),
+      lookForEntities: (radius, opts) => this._entities(radius, opts),
       sight: () => this.sight,
       log: (text) => this._addLog('system', text),
       broadcast: (message) => this._broadcast(message),
@@ -167,6 +171,7 @@ class WebServer {
     ws.send(JSON.stringify(this.status()));
     ws.send(JSON.stringify({ type: 'history', entries: this.log }));
     if (this.sight) ws.send(JSON.stringify(this.sight));
+    if (this.entities) ws.send(JSON.stringify(this.entities));
     ws.send(JSON.stringify(this.settings.message()));
     ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
     ws.send(JSON.stringify(pathMessage('fly', this.navigator.paths.fly)));
@@ -202,8 +207,10 @@ class WebServer {
           break;
         case 'scan': {
           const radius = Number(msg.radius);
-          this._scan(Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS
-            ? radius : this.settings.get('scan.radius'));
+          const what = WHAT.includes(msg.what) ? msg.what : 'both';
+          // The Scan radius box is for blocks; entities alone are looked for at the default distance.
+          this._look(what === 'entities' ? null : Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS
+            ? radius : this.settings.get('scan.radius'), what);
           break;
         }
         case 'settings':
@@ -277,22 +284,18 @@ class WebServer {
         return;
       }
       case 'scan': {
-        const radius = args[0] ? Number(args[0]) : this.settings.get('scan.radius');
-        if (!(Number.isInteger(radius) && radius >= 1 && radius <= MAX_SCAN_RADIUS)) {
-          say(`Usage: #scan [radius 1-${MAX_SCAN_RADIUS}], a cube around the agent (2 = 5x5x5). `
-            + `Without a radius it uses the configured default (${this.settings.get('scan.radius')}).`);
+        // #scan [radius] [blocks|entities|both], in any order
+        const what = args.find((a) => WHAT.includes(a.toLowerCase()))?.toLowerCase() || 'both';
+        const given = args.find((a) => !WHAT.includes(a.toLowerCase()));
+        const radius = given !== undefined ? Number(given) : null;
+        const max = what === 'entities' ? MAX_ENTITY_RADIUS : MAX_SCAN_RADIUS;
+        if (args.length > 2 || (radius !== null && !(Number.isInteger(radius) && radius >= 1 && radius <= max))) {
+          say(`Usage: #scan [radius] [blocks|entities|both]. blocks: a cube around the agent (radius 1-${MAX_SCAN_RADIUS}, `
+            + `2 = 5x5x5; default ${this.settings.get('scan.radius')}). entities: mobs, animals, players and dropped items `
+            + `(radius 1-${MAX_ENTITY_RADIUS}, default 16). both (the default): the two at once.`);
           return;
         }
-        this._scan(radius);
-        return;
-      }
-      case 'entities': {
-        const radius = args[0] ? Number(args[0]) : 16;
-        if (!(Number.isInteger(radius) && radius >= 1 && radius <= 48)) {
-          say('Usage: #entities [radius 1-48], mobs, animals, players and dropped items around the agent (default 16).');
-          return;
-        }
-        this._entities(radius);
+        this._look(radius ?? (what === 'entities' ? null : this.settings.get('scan.radius')), what);
         return;
       }
       case 'inflight': {
@@ -393,24 +396,41 @@ class WebServer {
     }
   }
 
-  /** List what is around the agent, with every command reply behind it (to check the stitching). */
-  async _entities(radius) {
+  /** Scan blocks, look for entities, or both at once (#scan, the Nanny Cam's Scan button). */
+  async _look(radius, what = 'both') {
+    await Promise.all([
+      what !== 'entities' && this._scan(radius),
+      what !== 'blocks' && this._entities(entityRadius(radius, what)),
+    ]);
+  }
+
+  /**
+   * Look for mobs, animals, players and dropped items around the agent, and show them in the Nanny
+   * Cam. The log entry carries every command reply behind the list, to check how they were matched up.
+   * Resolves to { pose, entities } (nearest first), or null if it failed.
+   */
+  async _entities(radius, { quiet = false } = {}) {
     if (!this.bridge.connected) {
       this._addLog('system', 'Looking for entities needs Minecraft to be connected.');
-      return;
+      return null;
     }
     try {
       const pose = await getAgentPose(this.bridge);
       const { entities, raw } = await nearbyEntities(this.bridge, pose, radius);
+      const where = `within ${radius} blocks of the agent at ${pose.x} ${pose.y} ${pose.z}`;
+      const summary = entities.length
+        ? `${entities.length}${entities.length === MAX_ENTITIES ? '+' : ''} entities ${where}: ${countsText(entities)}`
+        : `No entities ${where}.`;
       const lines = entities.map((e) => `${e.name}${e.hostile ? ' (hostile)' : ''}${e.type ? ` [${e.type}]` : ''}: `
         + `${e.x} ${e.y} ${e.z}, ${e.distance.toFixed(1)} blocks`);
-      const text = entities.length
-        ? `${entities.length}${entities.length === MAX_ENTITIES ? '+' : ''} entities within ${radius} blocks of the agent at `
-          + `${pose.x} ${pose.y} ${pose.z}: ${countsText(entities)}\n${lines.join('\n')}`
-        : `No entities within ${radius} blocks of the agent at ${pose.x} ${pose.y} ${pose.z}.`;
-      this._addLog('system', text, { commandLine: 'Entities', body: { entities, raw } });
+      this._addLog('system', quiet || !lines.length ? summary : `${summary}\n${lines.join('\n')}`,
+        { commandLine: 'Entities', body: { entities, raw } });
+      this.entities = entitiesMessage({ x: pose.x, y: pose.y, z: pose.z, yRot: pose.yRot }, radius, entities);
+      this._broadcast(this.entities);
+      return { pose, entities };
     } catch (err) {
       this._addLog('system', `Looking for entities failed: ${err.message}`);
+      return null;
     }
   }
 

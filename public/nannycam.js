@@ -15,11 +15,16 @@
   const scanRadius = $('cam-scan-radius');
   const scanSize = $('cam-scan-size');
   const scanButton = $('cam-scan');
+  const scanWhat = $('cam-scan-what');
 
   const AGENT_COLOR = [0.95, 0.76, 0.2, 1];
   // Walking paths are cyan, flight paths magenta; walked cells and finished trails fade.
   const PATH_COLORS = { walk: [0.2, 0.85, 0.95], fly: [0.95, 0.35, 0.85] };
   const TRANSLUCENT_ALPHA = 0.45;
+  // Entities: hostile mobs red, other mobs white, players blue, dropped items small and purple, unknown grey.
+  const ENTITY_COLORS = {
+    hostile: [0.95, 0.25, 0.25], mob: [0.97, 0.97, 0.97], player: [0.3, 0.55, 1], item: [0.75, 0.45, 1], unknown: [0.55, 0.55, 0.6],
+  };
 
   const gl = canvas.getContext('webgl2', { antialias: true });
   if (!gl) {
@@ -169,7 +174,7 @@
     return { vao, buffer, count: 0 };
   }
 
-  const batches = { opaque: makeBatch(), translucent: makeBatch(), agent: makeBatch(), path: makeBatch() };
+  const batches = { opaque: makeBatch(), translucent: makeBatch(), agent: makeBatch(), path: makeBatch(), entities: makeBatch() };
 
   function upload(batch, instances) {
     gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
@@ -185,6 +190,8 @@
   let agentPos = [0, 0, 0];
   let areas = []; // named areas from World Memory, outlined with small beads
   let visible = new Map(); // "x,y,z" -> block name, for hover lookups
+  let seen = null; // the latest look for entities: { center, radius, time, list: [{ name, x, y, z, ... }] }
+  let entityCells = new Map(); // "x,y,z" -> entity label, for hover lookups (checked before blocks)
   const camera = { yaw: Math.PI / 4, pitch: 0.6, distance: 28 };
 
   const FACING_NAMES = ['Z+ (south)', 'X- (west)', 'Z- (north)', 'X+ (east)'];
@@ -271,10 +278,34 @@
     });
     upload(batches.path, beads);
 
+    // Entities: a box standing where each one is (a two-high column for players, whose reported
+    // height is roughly their head), as they were at the last look.
+    const bodies = [];
+    entityCells = new Map();
+    let shown = 0;
+    for (const e of (seen && seen.list) || []) {
+      const kind = e.hostile ? 'hostile' : e.player ? 'player' : e.item ? 'item' : e.type ? 'mob' : 'unknown';
+      const size = e.item ? 0.3 : 0.6;
+      const feet = e.player ? Math.floor(e.y) - 1 : e.y;
+      if (Math.max(Math.abs(e.x - ax), Math.abs(feet - ay), Math.abs(e.z - az)) > radius + 1) continue;
+      shown++;
+      const color = [...ENTITY_COLORS[kind], 1];
+      const label = `${e.name}${e.hostile ? ' (hostile)' : ''}${e.type && !e.player && !e.item ? ` [${e.type}]` : ''}`;
+      const levels = e.player ? [feet, feet + 1] : [feet];
+      for (const y of levels) {
+        bodies.push(e.x - size / 2, y + (e.player ? 0.2 : 0), e.z - size / 2, size, ...color);
+        entityCells.set(`${Math.floor(e.x)},${Math.floor(y)},${Math.floor(e.z)}`,
+          `${label}  ${e.x.toFixed(1)} ${e.y.toFixed(1)} ${e.z.toFixed(1)}`);
+      }
+    }
+    upload(batches.entities, bodies);
+
     info.textContent = `${sight.scanned.toLocaleString()} blocks scanned at ${ax} ${ay} ${az}, `
       + `facing ${FACING_NAMES[(((Math.round(sight.agent.yRot / 90) % 4) + 4) % 4)]} · `
       + `${visible.size.toLocaleString()} drawn · `
-      + `${new Date(sight.time).toLocaleTimeString([], { hour12: false })}`;
+      + `${new Date(sight.time).toLocaleTimeString([], { hour12: false })}`
+      + (seen ? ` · ${seen.list.length} entities within ${seen.radius} (${shown} in view) at `
+        + `${new Date(seen.time).toLocaleTimeString([], { hour12: false })}` : '');
     requestDraw();
   }
 
@@ -330,7 +361,7 @@
 
     gl.disable(gl.BLEND);
     gl.depthMask(true);
-    for (const batch of [batches.opaque, batches.agent]) {
+    for (const batch of [batches.opaque, batches.agent, batches.entities]) {
       gl.bindVertexArray(batch.vao);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, batch.count);
     }
@@ -391,7 +422,7 @@
 
   /** Walk the ray under the cursor through the voxel grid and report the first visible block. */
   function hover(ev) {
-    if (!viewProj || !visible.size) return;
+    if (!viewProj || (!visible.size && !entityCells.size)) return;
     const rect = canvas.getBoundingClientRect();
     const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     const ny = 1 - ((ev.clientY - rect.top) / rect.height) * 2;
@@ -407,8 +438,8 @@
 
     for (let i = 0; i < 600; i++) {
       const key = cell.join(',');
-      if (visible.has(key)) {
-        tooltip.textContent = `${visible.get(key)}  ${cell.join(' ')}`;
+      if (entityCells.has(key) || visible.has(key)) {
+        tooltip.textContent = entityCells.get(key) || `${visible.get(key)}  ${cell.join(' ')}`;
         tooltip.style.left = `${ev.clientX - rect.left + 14}px`;
         tooltip.style.top = `${ev.clientY - rect.top + 14}px`;
         tooltip.hidden = false;
@@ -429,7 +460,7 @@
   });
 
   scanButton.addEventListener('click', () => {
-    window.ptolemy.send({ type: 'scan', radius: Number(scanRadius.value) });
+    window.ptolemy.send({ type: 'scan', radius: Number(scanRadius.value), what: scanWhat.value });
     info.textContent = 'Scanning...';
   });
 
@@ -438,6 +469,18 @@
     const { x, y, z } = sight.agent.position;
     agentPos = [x, y, z];
     empty.hidden = true;
+    rebuild();
+  });
+
+  // Entities can come before any block scan: then the robot's pose comes with them, and no blocks.
+  document.addEventListener('ptolemy:entities', (ev) => {
+    seen = ev.detail;
+    if (!sight) {
+      const { x, y, z, yRot } = seen.center;
+      sight = { agent: { position: { x, y, z }, yRot }, scanned: 0, time: seen.time, palette: [], blocks: [] };
+      agentPos = [x, y, z];
+      empty.hidden = true;
+    }
     rebuild();
   });
 

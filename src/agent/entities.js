@@ -12,6 +12,9 @@ const { selectorName } = require('./players');
 // Everything is sent at once, so a look around costs about one round trip.
 
 const MAX_ENTITIES = 64;
+const DEFAULT_RADIUS = 16; // entities are cheap to look for, so they're looked for further than blocks
+const MAX_RADIUS = 48;
+const WHAT = ['blocks', 'entities', 'both'];
 const MAX_NAMES = 16; // distinct names looked up per call; the rest stay "unidentified"
 const NO_TARGETS = /no targets matched/i;
 // The robot itself (and other players' agents) and experience orbs are never worth listing.
@@ -147,4 +150,30 @@ function countsText(entities) {
   return [...counts.entries()].map(([label, n]) => (n > 1 ? `${label} ×${n}` : label)).join(', ');
 }
 
-module.exports = { nearbyEntities, countsText, parseTargets, parseNames, typeGuess, displayName, MAX_ENTITIES };
+/**
+ * How far to look for entities: the radius asked for when looking only for entities, otherwise at
+ * least DEFAULT_RADIUS (a block scan's radius is small, since blocks are slow to scan).
+ */
+function entityRadius(radius, what) {
+  const r = Math.round(Number(radius));
+  if (what === 'entities') return Number.isFinite(r) && radius !== null && radius !== undefined ? Math.min(MAX_RADIUS, Math.max(1, r)) : DEFAULT_RADIUS;
+  return Math.min(MAX_RADIUS, Math.max(DEFAULT_RADIUS, Number.isFinite(r) ? r : 0));
+}
+
+/** The compact form sent to the Nanny Cam (exact positions, so mobs stand where they are). */
+function entitiesMessage(center, radius, entities) {
+  return {
+    type: 'entities',
+    center,
+    radius,
+    time: Date.now(),
+    list: entities.map((e) => ({
+      name: e.name, type: e.type, hostile: e.hostile, player: e.player, item: e.item, ...e.exact,
+    })),
+  };
+}
+
+module.exports = {
+  nearbyEntities, countsText, entityRadius, entitiesMessage, parseTargets, parseNames, typeGuess, displayName,
+  MAX_ENTITIES, DEFAULT_RADIUS, MAX_RADIUS, WHAT,
+};

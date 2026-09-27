@@ -36,7 +36,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
 | Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
 | Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
-| Seeing mobs, animals, players and dropped items (`nearby_entities`, `#entities`) | ✅ New, needs real-world testing |
+| Seeing mobs, animals, players and dropped items (`scan` / `#scan` with `entities`, drawn in the Nanny Cam) | ✅ New, needs real-world testing |
 | Automatic mode: LLM control (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic, any OpenAI-compatible server) | ✅ New, needs real-world testing |
 | Endpoint tests (connection, model, tool calling) | ✅ New |
 | Instructions from in-game chat (`Ptolemy, come here`) | ✅ New |
@@ -99,7 +99,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | --- | --- |
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
-| `#scan` / `#scan <radius>` | Identify every block in a cube reaching `radius` blocks out from the agent in every direction (2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom. Without a radius it uses the default from the Configuration tab (4). See [Scanning](#scanning) |
+| `#scan [radius] [blocks\|entities\|both]` | Look around the agent. `blocks`: identify every block in a cube reaching `radius` blocks out from the agent in every direction (2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom; without a radius, the default from the Configuration tab (4). `entities`: the mobs, animals, players and dropped items within `radius` blocks (default 16, up to 48), with every raw command reply in the log entry's details. `both` (the default): the two at once, entities at least 16 blocks out. See [Scanning](#scanning) and [Seeing entities](#seeing-entities) |
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
@@ -107,7 +107,6 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
 | `#pathsafe on\|off` | On (default): if the agent isn't where it should be after a step, keep checking for up to 2s before calling it a failure. That costs nothing when steps succeed straight away. Off: check once |
 | `#pathstop` | Stop a running walk after the current step |
-| `#entities` / `#entities <radius>` | List the mobs, animals, players and dropped items within `radius` blocks of the agent (default 16, up to 48): what each is, where, how far, and which are hostile. The log entry's details hold every raw command reply, to check how they were matched up. See [Seeing entities](#seeing-entities) |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
 | `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
@@ -232,7 +231,8 @@ makes it forget everything said so far.
   the player are, the world's memory, and where the request came from. It's left out of older
   messages, so the model sees one current copy, not a pile of outdated ones.
 - **Only the newest snapshot of each kind** (`scan`, `get_status`, `get_memory`, `todo_write`) is sent
-  in full. Older ones are replaced by a one-line note.
+  in full. Older ones are replaced by a one-line note. A scan's blocks and entities count separately, so
+  looking for entities doesn't hide the last block scan.
 - **One exception, for Anthropic:** within the request being worked on, the conversation is sent
   unchanged, older `[Now]` blocks included. Anthropic requires the history before its thinking blocks
   to stay exactly as it was, and its prompt caching makes the repeats cheap. Earlier requests are
@@ -386,14 +386,13 @@ report what really happened, because the game says "success" even when the robot
 | Tool | What it does |
 | --- | --- |
 | `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
-| `scan` | Scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around |
+| `scan` | `what: "blocks"`: scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
 | `get_blocks` | The block at up to 64 positions, relative or world |
 | `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
 | `teleport_to_player` | `agent tp`, only when the request asks for a teleport |
 | `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
-| `nearby_entities` | Mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. See [Seeing entities](#seeing-entities) |
 | `locate` | One position, given relative or world, in both forms, plus the block there and its area |
 | `collect`, `drop` | Pick up items nearby, or drop items from a slot |
 | `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked |
@@ -414,8 +413,8 @@ report what really happened, because the game says "success" even when the robot
 ### Seeing entities
 
 Blocks stay put, so a scan remembers them. Mobs don't, and no single Bedrock command says both what an entity
-is and where it is. `nearby_entities` (and `#entities`) sends a few commands at once, centred on the agent, and
-matches their answers by each entity's `uniqueId`:
+is and where it is. A scan for entities (`scan` with `what: "entities"` or `"both"`, `#scan`, the Nanny Cam's Scan
+button) sends a few commands at once, centred on the agent, and matches their answers by each entity's `uniqueId`:
 
 | Command | What it tells |
 | --- | --- |
@@ -562,7 +561,8 @@ everything back (endpoints and keys stay).
 The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
 and no libraries:
 
-- **Scan** runs a scan of the chosen radius, same as `#scan`. Every new scan replaces Sight.
+- **Scan** runs a scan of the chosen radius, same as `#scan`: blocks, entities, or both (the picker next to it).
+  Every new block scan replaces Sight; every look for entities replaces the entities shown.
 - **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
   **double-click** to reset.
 - **Zoom** limits the view to the blocks within that many blocks of the robot, which helps indoors
@@ -570,6 +570,9 @@ and no libraries:
 - **Hover** over a block to see its name and coordinates.
 - Named areas from World Memory are outlined with dotted lines, one colour each.
 - The robot is the yellow block. Its darker nose points the way it's facing.
+- Entities, where they were at the last look: hostile mobs are red boxes, other mobs white, players
+  blue two-block columns, dropped items small purple boxes, and anything unidentified grey. Hover over
+  one to see what it is. They don't move until the next look.
 
 Air isn't drawn, and neither are blocks completely enclosed by other blocks. Water, glass and ice
 are drawn see-through, as is everything the robot can move through (plants, flowers, torches...).

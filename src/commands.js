@@ -16,8 +16,7 @@ const FILE = path.join(__dirname, '..', 'data', 'commands.json');
 const HASH = [
   ['help', '', 'List these commands.'],
   ['ask', '<request>', 'Give the LLM a request, as if typed in the Automatic panel.'],
-  ['scan', '[radius]', 'Identify every block in a cube around the agent (radius 2 = 5x5x5, up to 15). Without a radius, the configured default.'],
-  ['entities', '[radius]', 'List the mobs, animals, players and dropped items around the agent (default 16 blocks, up to 48), with the raw replies behind it.'],
+  ['scan', '[radius] [blocks|entities|both]', 'Look around the agent. blocks: identify every block in a cube (radius 2 = 5x5x5, up to 15; without a radius, the configured default). entities: mobs, animals, players and dropped items (default 16 blocks, up to 48), with the raw replies behind the list. both (the default): the two at once. Both show up in the Nanny Cam.'],
   ['pathfind', '<x y z | @p [name]> [near|exact]', 'Plan a route that stays next to blocks. ~ = relative to the agent; @p = a player (near them unless exact).'],
   ['pathwalk', '', 'Walk the last planned route, checking the agent\'s position after every step.'],
   ['pathfindwalk', '<x y z | @p [name]> [near|exact] [scan=7] [retries=3]', 'Plan and walk, rescanning when entering unknown ground and re-planning when blocked.'],

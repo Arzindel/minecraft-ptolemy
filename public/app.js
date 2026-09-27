@@ -66,6 +66,7 @@
         appendLog(msg.entry);
         break;
       case 'sight':
+      case 'entities':
       case 'path':
       case 'agent':
       case 'settings':
