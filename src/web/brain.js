@@ -10,6 +10,7 @@ const { testEndpoint, testModel, testTools } = require('../llm/tests');
 const { WorldManager } = require('../world/manager');
 const { McpServer } = require('../mcp/server');
 const { getAgentPose } = require('../agent/pose');
+const { allPlayers } = require('../agent/players');
 
 const POSITION_POLL_MS = 4000;
 
@@ -352,9 +353,9 @@ class Brain {
         this.broadcast(this.worlds.status());
       }
     } catch { /* no agent */ }
-    const p = await this._playerPosition();
-    const player = p && { ...p, areas: m.describeAreasAt(p.x, p.y, p.z) || m.describeAreasAt(p.x, p.y - 1, p.z) };
-    this.positions = { type: 'positions', robot, player, time: Date.now() };
+    const everyone = await allPlayers(this.bridge).catch(() => []);
+    const list = everyone.map((p) => ({ ...p, areas: m.describeAreasAt(p.x, p.y, p.z) || m.describeAreasAt(p.x, p.y - 1, p.z), host: p.name === this.bridge.player }));
+    this.positions = { type: 'positions', robot, players: list, time: Date.now() };
     this.broadcast(this.positions);
   }
 

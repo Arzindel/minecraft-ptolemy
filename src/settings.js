@@ -33,8 +33,9 @@ const SCHEMA = [
           + 'silence, not the whole answer. Turned off automatically for a server that refuses it.' },
       { key: 'llm.coordinates', label: 'Coordinates the model sees', type: 'select', default: 'relative',
         options: [{ value: 'relative', label: 'Relative' }, { value: 'world', label: 'World' }],
-        help: 'Relative: the robot is always at 0 0 0, 0 0 1 is ahead, 0 1 0 above, 1 0 0 on its left; everything moves '
-          + 'and turns with it. World: real Minecraft coordinates and compass directions. Applies to MCP clients too.' },
+        help: 'Relative: tool results give positions as directions from the robot ("2 forward, 1 left") plus world '
+          + 'x=/y=/z=. World: world coordinates only. Either way the model can pass relative counts or world x, y, z, '
+          + 'and the locate tool translates between them. Applies to MCP clients too.' },
       { key: 'llm.temperature', label: 'Temperature', default: 0.3, min: 0, max: 2, step: 0.05,
         help: 'Ignored automatically by models that don\'t accept it.' },
       { key: 'llm.maxTokens', label: 'Max tokens per reply', default: 4096, min: 64, max: 65536, step: 64,
@@ -116,6 +117,14 @@ const SCHEMA = [
       { key: 'path.scanRadius', label: 'Rescan radius for #pathfindwalk', default: 7, min: 1, max: 15, step: 1,
         help: 'How far around the robot to scan when walking into unknown territory (7 = 15x15x15).' },
       { key: 'path.retries', label: 'Retries for #pathfindwalk', default: 3, min: 0, max: 50, step: 1 },
+      { key: 'path.finalMultiplier', label: 'Final spot multiplier (approximate go_to)', default: 10, min: 0, max: 1000, step: 1,
+        help: 'Where an approximate go_to stops costs this many times the walking cost of standing there: 10 on ground, 50 '
+          + 'in water or on a wall, 400 in midair with the default costs. So it would rather stop a little further away, on '
+          + 'solid ground, than right next to the target in the air.' },
+      { key: 'path.nearSide', label: 'Approximate stop: beside the target', default: 10, min: 0, max: 1000, step: 1 },
+      { key: 'path.nearDiagonal', label: 'Approximate stop: diagonal to the target', default: 15, min: 0, max: 1000, step: 1 },
+      { key: 'path.nearFar', label: 'Approximate stop: 2 blocks away', default: 20, min: 0, max: 1000, step: 1 },
+      { key: 'path.nearHeight', label: 'Approximate stop: per block higher or lower', default: 10, min: 0, max: 1000, step: 1 },
       { key: 'path.safe', label: 'Safe mode (#pathsafe)', type: 'boolean', default: true,
         help: 'If the agent isn\'t where it should be after a step, keep checking for up to 2s before '
           + 'calling it a failure. Costs nothing when steps succeed straight away.' },

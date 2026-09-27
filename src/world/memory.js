@@ -214,14 +214,14 @@ class WorldMemory extends EventEmitter {
     const d = this.data;
     const lines = [`# World memory: ${d.name}`];
     if (d.areas.length) {
-      lines.push(`Named areas (${frame && frame.relative ? 'from..to in your current coordinates' : 'x y z from..to'}; `
-        + 'use go_to with target "area" to visit one):');
+      lines.push('Named areas (world x, y, z ranges; use go_to with target "area" to visit one):');
       const here = frame ? this.areasAt(frame.pose.x, frame.pose.y, frame.pose.z) : [];
       for (const a of d.areas) {
         const parent = this.parentOf(a);
-        const b = frame ? frame.box(a.min, a.max) : a;
-        lines.push(`- ${a.name}: ${b.min[0]}..${b.max[0]} ${b.min[1]}..${b.max[1]} ${b.min[2]}..${b.max[2]}`
-          + `${parent ? ` (in ${parent.name})` : ''}${here.includes(a) ? ' (you are inside)' : ''}${a.note ? `, ${a.note}` : ''}`);
+        const mid = [0, 1, 2].map((i) => Math.floor((a.min[i] + a.max[i]) / 2));
+        const where = !frame ? '' : here.includes(a) ? ', you are inside' : frame.relative ? `, its middle is ${frame.words(...mid)}` : '';
+        lines.push(`- ${a.name}: x=${a.min[0]}..${a.max[0]} y=${a.min[1]}..${a.max[1]} z=${a.min[2]}..${a.max[2]}`
+          + `${parent ? ` (in ${parent.name})` : ''}${where}${a.note ? `; ${a.note}` : ''}`);
       }
     } else {
       lines.push('No named areas yet. When the player names a place, save it with add_area.');

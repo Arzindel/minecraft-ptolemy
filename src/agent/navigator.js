@@ -2,6 +2,7 @@
 
 const { planPath, summarizeSteps, cellsAround } = require('./pathfind');
 const { getAgentPose, samePose, describePose } = require('./pose');
+const { playerPosition } = require('./players');
 
 const SAFE_WAIT_MS = 2000;
 const SAFE_POLL_MS = 100;
@@ -37,12 +38,12 @@ class Navigator {
 
   // --- Console entry points -------------------------------------------------
 
-  async pathfind(args, { fly = false } = {}) {
+  async pathfind(args, { fly = false, near = null } = {}) {
     const kind = kindOf(fly);
     await this._exclusive(async () => {
       const start = await getAgentPose(this.bridge);
       this.agentMoved(start);
-      const goal = await this._resolveGoal(args, start);
+      const goal = await this._resolveGoal(args, start, { near });
       const plan = planPath(this.world, start, goal, this._planOptions(fly));
       if (plan.error) {
         this._setPath(kind, null);
@@ -94,13 +95,13 @@ class Navigator {
   }
 
   async pathfindwalk(args, {
-    scanRadius = this.settings.get('path.scanRadius'), retries = this.settings.get('path.retries'), fly = false,
+    scanRadius = this.settings.get('path.scanRadius'), retries = this.settings.get('path.retries'), fly = false, near = null,
   } = {}) {
     const kind = kindOf(fly);
     await this._exclusive(async () => {
       this.walking = kind;
       try {
-        await this._pathfindwalk(kind, args, { scanRadius, retries, fly });
+        await this._pathfindwalk(kind, args, { scanRadius, retries, fly, near });
       } finally {
         this.walking = null;
         this._finishPath(kind);
@@ -108,10 +109,10 @@ class Navigator {
     });
   }
 
-  async _pathfindwalk(kind, args, { scanRadius: radius, retries, fly }) {
+  async _pathfindwalk(kind, args, { scanRadius: radius, retries, fly, near }) {
     await this.scan(radius, { quiet: true });
     let pose = await getAgentPose(this.bridge);
-    let goal = await this._resolveGoal(args, pose);
+    let goal = await this._resolveGoal(args, pose, { near });
 
     // Rescans on the way into unknown territory are budgeted by distance, so a robot trying
     // to get into a closed box gives up instead of looping forever.
@@ -225,7 +226,40 @@ class Navigator {
       costs: this.settings.costs(),
       turnCost: this.settings.get('path.turnCost'),
       unknownPenalty: this.settings.get('path.unknownPenalty'),
+      finalMultiplier: this.settings.get('path.finalMultiplier'),
     };
+  }
+
+  /**
+   * "Somewhere around" (x, y, z): any free cell up to 2 blocks away horizontally and 1 up or down,
+   * but never straight above or below it. Each has an arrival cost (beside < diagonal < 2 away, plus
+   * per block of height), and the planner adds finalMultiplier x the cost of standing there, so the
+   * robot prefers to end on solid ground over hanging in the air right next to the target.
+   */
+  _nearGoal(x, y, z, label) {
+    const get = (k) => this.settings.get(k);
+    const cells = [];
+    const arrival = new Map();
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        if (!dx && !dz) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          const c = [x + dx, y + dy, z + dz];
+          if (this.world.state(...c) === 'solid') continue;
+          const ring = Math.max(Math.abs(dx), Math.abs(dz));
+          const flat = ring === 2 ? get('path.nearFar') : Math.abs(dx) + Math.abs(dz) === 1 ? get('path.nearSide') : get('path.nearDiagonal');
+          cells.push(c);
+          arrival.set(c.join(','), flat + get('path.nearHeight') * Math.abs(dy));
+        }
+      }
+    }
+    return { x, y, z, cells, arrival, label: label || `near ${x} ${y} ${z}` };
+  }
+
+  /** The cell a player's feet are in, when querytarget reports a height closer to their eyes. */
+  _feet(x, y, z) {
+    if (this.world.state(x, y - 1, z) !== 'solid' && this.world.state(x, y - 2, z) === 'solid') return y - 1;
+    return y;
   }
 
   async _exclusive(fn) {
@@ -281,38 +315,30 @@ class Navigator {
    * "x y z" (each may be ~ or ~n, relative to the agent) or "@p" / "me" for the connected player,
    * in which case the agent ends next to them rather than inside them.
    */
-  async _resolveGoal(args, pose) {
+  async _resolveGoal(args, pose, { near = null } = {}) {
     // A ready-made goal ({ x, y, z, cells, label }), e.g. "any cell beside this block" from the tools.
     if (args && !Array.isArray(args) && args.goal) return args.goal;
-    if (args.length === 1 && /^(@p|@s|me)$/i.test(args[0])) {
-      const res = await this.bridge.sendCommand('querytarget @s', { quiet: true });
-      let player;
-      try {
-        player = JSON.parse(res.body.details)[0];
-      } catch {
-        throw new Error(`couldn't read your position (${res.statusMessage})`);
-      }
-      const x = Math.floor(player.position.x);
-      const y = Math.floor(player.position.y);
-      const z = Math.floor(player.position.z);
-      // End beside the player's body, not on top of them. querytarget may report eye height,
-      // so the body is taken as this cell and the one below.
-      const cells = [];
-      for (const dy of [-1, 0]) {
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-          cells.push([x + dx, y + dy, z + dz]);
-        }
-      }
-      return { x, y, z, cells, label: 'you' };
+    // "@p" is the connected player; "@p <name>" any player online.
+    if (args.length >= 1 && /^(@p|@s|me)$/i.test(args[0])) {
+      const name = args.slice(1).join(' ') || null;
+      const player = await playerPosition(this.bridge, name);
+      if (!player) throw new Error(name ? `can't find a player called "${name}" (are they online?)` : 'couldn\'t read your position');
+      const { x, z } = player;
+      const y = this._feet(x, player.y, z);
+      const who = name && name !== this.bridge.player ? name : 'you';
+      // To a player: somewhere around them unless asked for their exact spot.
+      if (near === false) return { x, y, z, label: `${who === 'you' ? 'your' : `${who}'s`} exact spot` };
+      return this._nearGoal(x, y, z, who);
     }
 
-    if (args.length !== 3) throw new Error('usage: <x> <y> <z> (~ for relative to the agent), or @p');
+    if (args.length !== 3) throw new Error('usage: <x> <y> <z> (~ for relative to the agent), or @p [player name]');
     const [x, y, z] = args.map((arg, i) => {
       const base = [pose.x, pose.y, pose.z][i];
       const m = /^(~)?(-?\d+)?$/.exec(arg);
       if (!m || (!m[1] && m[2] === undefined)) throw new Error(`"${arg}" isn't a coordinate`);
       return (m[1] ? base : 0) + Number(m[2] || 0);
     });
+    if (near === true) return this._nearGoal(x, y, z);
     // A solid target means "go next to it".
     if (this.world.state(x, y, z) !== 'solid') return { x, y, z };
     return { x, y, z, cells: cellsAround(x, y, z) };

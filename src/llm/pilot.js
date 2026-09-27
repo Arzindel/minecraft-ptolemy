@@ -6,10 +6,13 @@ const { resolveModel } = require('./tests');
 const { systemPrompt, contextBlock, parseTextToolCalls, parseArguments, visibleText, thinkingOf } = require('./prompts');
 const { getAgentPose } = require('../agent/pose');
 const { Frame } = require('../agent/frame');
+const { allPlayers } = require('../agent/players');
 
 const TRANSCRIPT_LIMIT = 300;
 const QUEUE_LIMIT = 5;
-const STREAM_FLUSH_MS = 120; // how often streamed text is pushed to the WebUI
+const STREAM_FLUSH_MS = 120;
+// Flying and teleporting are only allowed when the request itself asks for them.
+const FLIGHT_WORDS = /\b(fly|flies|flying|flew|flight|teleport\w*|tp)\b/i; // how often streamed text is pushed to the WebUI
 // Tools whose result is a snapshot: once a newer one exists, the older ones are left out of the prompt.
 const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'get_memory', 'todo_write']);
 
@@ -146,6 +149,9 @@ class Pilot extends EventEmitter {
     this.abort = new AbortController();
     const { signal } = this.abort;
     const wondering = request.source === 'wonder';
+    const flight = !wondering && FLIGHT_WORDS.test(request.text);
+    // Who "me" is: the chat sender, the person at the WebUI (the connected player), nobody while wondering.
+    const requester = wondering ? null : request.sender || this.bridge.player || null;
     this._entry({ kind: 'user', text: request.text, source: request.source, sender: request.sender });
     const say = (text, error = false) => this.emit('say', { text, source: request.source, sender: request.sender, error });
 
@@ -160,11 +166,11 @@ class Pilot extends EventEmitter {
       let step = 0;
       for (; step < maxSteps && !signal.aborted; step++) {
         const textMode = this._toolMode(config) === 'text';
-        const tools = this.toolbox.list();
+        const tools = this.toolbox.list({ flight });
         this._setPhase('thinking', `${config.label}${config.model ? ` · ${config.model}` : ''}`);
 
         // Fresh state for this call only: it rides on the newest message and is dropped from older ones.
-        turn[turn.length - 1].context = await this._context(request.source);
+        turn[turn.length - 1].context = await this._context(request.source, flight, requester);
         const live = this._liveEntries(request.source);
 
         let reply;
@@ -217,7 +223,9 @@ class Pilot extends EventEmitter {
           }
           const entry = this._entry({ kind: 'tool', name: call.name, args: call.args, pending: true });
           this._setPhase('tool', call.name);
-          const res = await this.toolbox.call(call.name, call.args, { signal, origin: wondering ? 'LLM (wondering)' : 'LLM' });
+          const res = await this.toolbox.call(call.name, call.args, {
+            signal, flight, player: requester, origin: wondering ? 'LLM (wondering)' : 'LLM',
+          });
           this.touch();
           const limit = this.settings.get('llm.toolResultChars');
           const resultText = res.text.length > limit ? `${res.text.slice(0, limit)}\n... (cut to ${limit} characters)` : res.text;
@@ -273,7 +281,7 @@ class Pilot extends EventEmitter {
   }
 
   /** The [Now] block: where the request came from, where things are (in the model's frame), and the memory. */
-  async _context(source) {
+  async _context(source, flight, requester) {
     const memory = this.worlds.current;
     const inArea = (x, y, z) => {
       const where = memory && memory.describeAreasAt(x, y, z);
@@ -292,14 +300,23 @@ class Pilot extends EventEmitter {
         parts.push('Robot: position unknown (there may be no agent in this world yet; run_command "agent create" makes one).');
       }
       try {
-        const res = await this.bridge.sendCommand('querytarget @s', { quiet: true });
-        const p = JSON.parse(res.body.details)[0].position;
-        const [x, y, z] = [p.x, p.y, p.z].map(Math.floor);
-        const rel = frame && frame.relative;
-        parts.push(`Player: ${frame ? frame.fmt(x, y, z) : `${x} ${y} ${z}`}${rel ? ` (world ${x} ${y} ${z})` : ''}`
-          + `${inArea(x, y, z) || inArea(x, y - 1, z)}.`);
+        const everyone = await allPlayers(this.bridge);
+        for (const p of everyone) {
+          const tags = [p.name === requester ? 'asked you' : '', p.name === this.bridge.player ? 'at the Ptolemy PC' : '']
+            .filter(Boolean).join(', ');
+          parts.push(`Player ${p.name}${tags ? ` (${tags})` : ''}: ${frame ? frame.fmt(p.x, p.y, p.z) : Frame.world(p.x, p.y, p.z)}`
+            + `${inArea(p.x, p.y, p.z) || inArea(p.x, p.y - 1, p.z)}.`);
+        }
+        if (everyone.length > 1) {
+          parts.push(requester
+            ? `"Me", "here" and "the player" mean ${requester}. go_to and teleport_to_player go to ${requester} unless you name another player.`
+            : 'Nobody in particular asked (wondering). Name a player in go_to to go to one.');
+        }
       } catch { /* not important */ }
     }
+    parts.push(flight
+      ? 'Flying and teleporting: allowed for this request (the player asked for it).'
+      : 'Flying and teleporting: NOT allowed for this request. Walk; if you can\'t get there on foot, say so.');
     return contextBlock({ source, status: parts.join('\n'), memory: memory && memory.promptBlock(frame) });
   }
 
@@ -364,7 +381,6 @@ class Pilot extends EventEmitter {
       instructions: this.settings.get('llm.instructions'),
       tools,
       textMode,
-      coordinates: this.settings.get('llm.coordinates'),
     });
     const budget = this.settings.get('llm.historyChars');
     const turns = this._trimmed(budget - system.length);

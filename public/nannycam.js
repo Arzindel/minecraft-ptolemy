@@ -472,5 +472,5 @@
   });
 
   // The canvas has no size while its tab is hidden, so redraw when it's shown.
-  document.addEventListener('ptolemy:tab', (ev) => { if (ev.detail === 'nannycam') requestDraw(); });
+  document.addEventListener('ptolemy:tab', (ev) => { if (ev.detail === 'robot') requestDraw(); });
 })();

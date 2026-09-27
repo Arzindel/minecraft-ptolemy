@@ -32,7 +32,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | WebSocket bridge to Minecraft | ✅ Working |
 | WebUI: header with connection status | ✅ Working |
 | Manual mode: raw command console | ✅ Working |
-| Information panel (connection info, response inspector) | ✅ Basic |
+| Robot tab: dashboard, Automatic, Manual console and Nanny Cam on one screen | ✅ New |
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
 | Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
 | Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
@@ -41,7 +41,6 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Instructions from in-game chat (`Ptolemy, come here`) | ✅ New |
 | Wondering (the robot acts on its own when idle) | ✅ New |
 | World Memory per world: named areas, todo list, thoughts, notes, per-world settings | ✅ New |
-| Dashboard | ✅ New |
 | MCP server (the same tools for Claude Desktop, LM Studio, Cursor...) | ✅ New |
 
 ## Requirements
@@ -124,7 +123,7 @@ message from the game that Ptolemy can't match to a command or event is logged t
 arrives unnoticed.
 
 Click a response line to see the raw JSON the game sent back in the
-Information panel.
+dashboard's Selected response card.
 
 ### Configuration
 
@@ -215,7 +214,7 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
 
 ## Automatic mode (LLM)
 
-The **Automatic** tab is a chat with the robot. Type a request ("come to me", "dig a 3x3 hole in front
+The **Automatic** panel (bottom left of the Robot tab) is a chat with the robot. Type a request ("come to me", "dig a 3x3 hole in front
 of you", "what's around you?") and the LLM works it out with the robot's tools, one call at a time:
 it calls a tool, reads what actually happened, and decides what to do next, until it answers without
 calling a tool. Every tool call shows up in the transcript (click one to see the full result) and in
@@ -244,38 +243,72 @@ they're written. The thinking stays open while it streams, then collapses. The t
 seconds of silence instead of the whole answer, so a slow but steady model isn't cut off. A server that
 refuses streaming is switched to normal replies automatically.
 
-### Coordinates
+### Positions: relative and world
 
-**Coordinates the model sees** decides how positions are shown to the model:
+Small models mix up coordinate systems easily, so the two never share names:
 
-- **Relative (the default):** the robot is always at `0 0 0`. `x` is its left, `y` is up, and `z` is
-  ahead:
-  - `0 0 1` is the block in front of it, `0 0 -1` the one behind.
-  - `1 0 0` is on its left, `-1 0 0` on its right.
-  - Left is positive so that facing south (y-rot 0) the frame matches the world's axes: relative =
-    world − robot. Facing north (±180) it's (−x, −z). Facing west (90), world X becomes relative −z and
-    world Z becomes relative x. Facing east (−90), world X becomes relative z and world Z becomes
-    relative −x.
-  - `0 1 0` is above, `0 -1 0` below.
-  - Everything moves and turns with the robot, so the model never deals with compass directions or
-    world coordinates.
-  - Tools take and return coordinates in this frame, and after a move or turn they remind the model
-    that it's at `0 0 0` again.
-  - Areas are still stored in world coordinates and shown in the current frame, so they stay put.
-  - World coordinates are still there alongside: `get_status` and the `[Now]` block show both, and
-    `go_to`, `get_blocks`, `destroy`, `place` and `attack` take world coordinates with `world: true`.
-    `run_command` only knows world coordinates.
-- **World:** real Minecraft coordinates and compass directions, as before.
+- **Relative positions are directions and block counts from the robot,** always in words: "2 forward,
+  1 left, 1 down". The robot itself is "where you are". Tools take them as counts:
+  `{forward: 2, left: 1, down: 1}`, `{down: 1}` for the block below.
+- **World coordinates are Minecraft's fixed x, y, z,** always written `x=5 y=89 z=-3` and passed as
+  `{x: 5, y: 89, z: -3}`. `x`, `y` and `z` never mean anything else, and `run_command` only understands
+  these.
+- **Tool results show both,** e.g. "2 forward, 1 left (x=12 y=64 z=9)". The **`locate`** tool translates
+  one position either way, and says what block is there and which named area it's in.
+- **After a move or turn,** results say where the robot is now, in world coordinates and facing, and
+  that relative positions are measured from there.
+- **The pathfinder's own messages** (which describe a finished trip) use world coordinates.
+- **Named areas** are stored and listed in world coordinates, with where their middle is from the robot.
+- **Coordinates the model sees** (Configuration → LLM) picks what results show: "Relative" shows both
+  (the default), "World" shows world coordinates only. Tools accept either form in both modes.
 
-The setting applies to MCP clients too.
+Internally, relative positions are [left, up, forward], so facing south (y-rot 0) they're simply
+world − robot. The other facings are that, rotated (`src/agent/frame.js`).
 
-**Where replies go.** What the model says while it works (its "default replies") goes back to wherever
-the request came from: a request typed in the WebUI is answered in the WebUI, and a request from the
-game chat is answered in the game chat (as `<Ptolemy> ...`). The WebUI always shows everything. To
-reach the other side on purpose, the model has `send_chat` and `send_webui`. For example, you can ask
-it in the WebUI to "tell everyone dinner is ready".
+### Several players
 
-The conversation is saved per world (`data/worlds/<id>/conversation.json`), so it survives restarts.
+- **Everyone online is found by name:** `list` gives who's online, and `querytarget @a[name="…"]` gives
+  where each one is. `querytarget @s` only ever finds the player whose game is connected to Ptolemy.
+- **Every request remembers who asked:** the chat sender, or the connected player for requests typed
+  in the WebUI. While wondering, nobody asked.
+- **The `[Now]` block and `get_status` list every player,** marking who asked and who's at the Ptolemy PC.
+  "Me", "here" and "the player" mean whoever asked.
+- **`go_to {target: "player"}` and `teleport_to_player` go to whoever asked.** Pass `player: "Bob"` (any
+  case, or a unique start of the name) to go to someone else. An unknown name gets the list of who's
+  online.
+- **Teleporting to a player other than the agent's owner** uses their coordinates, since `agent tp`
+  alone always goes to the owner.
+- **The Dashboard lists every player's position.**
+- **In the console:** `#pathfindwalk @p Bob` walks to Bob.
+
+### Exact or near: where go_to stops
+
+`go_to` has a `precision` option (the console takes `near` / `exact` after the target):
+
+- **exact:** end on the target cell itself. For the player, that's the cell your feet are in. A
+  reported eye height is corrected down to your feet.
+- **near:** end anywhere around the target: beside it, diagonal to it, or 2 blocks away, and up to 1
+  block higher or lower. It never stops straight above or below the target. Each possible stopping
+  cell costs extra to end on:
+  - beside the target: 10
+  - diagonal: 15
+  - 2 blocks away: 20
+  - per block of height difference: 10
+  - **plus the final spot multiplier (10) × the walking cost of standing there:** 10 on ground, 50 in
+    water or clinging to a wall, 400 in midair with the default costs.
+
+  So it would rather walk a few more blocks and stand on solid ground than stop beside the target in
+  the air.
+- **Defaults:** near for the player ("come here") and for named areas, exact for positions.
+- **Settings:** all of these numbers are under Configuration → Robot & paths, per world.
+
+### Flying and teleporting only when asked
+
+`go_to` with `fly`, `teleport_to_player` and `tp`/`agent tp` through `run_command` are only allowed
+when the request itself asks for them, e.g. "fly over to me" or "teleport to me". Otherwise the fly
+option and the teleport tool aren't offered to the model at all, and any attempt is refused. The model
+is told to walk, and to say so if it can't get there. The `[Now]` block tells it which case applies.
+Wondering never flies or teleports. MCP clients aren't restricted.
 
 ### Endpoints
 
@@ -351,12 +384,13 @@ report what really happened, because the game says "success" even when the robot
 | --- | --- |
 | `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
 | `scan` | Scan a cube around the robot (updates Sight and the Nanny Cam) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around |
-| `get_blocks` | The block at up to 64 exact coordinates |
+| `get_blocks` | The block at up to 64 positions, relative or world |
 | `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
-| `teleport_to_player` | `agent tp` |
-| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's x y z instead, they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
+| `teleport_to_player` | `agent tp`, only when the request asks for a teleport |
+| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
+| `locate` | One position, given relative or world, in both forms, plus the block there and its area |
 | `collect`, `drop` | Pick up items nearby, or drop items from a slot |
 | `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked |
 | `send_webui` | A highlighted message in the Automatic tab, whoever asked |
@@ -408,15 +442,22 @@ What it remembers:
 
 The LLM sees all of it in its system prompt, and MCP clients can read it with `get_memory`.
 
-## Dashboard
+## The Robot tab
 
-The **Dashboard** tab shows it all at once:
-- **The world**: its name (click to rename), how it was recognised, other known worlds, and the agent.
-- **Right now**: where the robot and the player are and in which areas, what the robot is doing, the
-  wondering countdown, and the active LLM endpoint with its test dots.
-- **The robot's memory**: the todo list (click a mark to go pending → in progress → done), what's on
-  its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent activity,
-  and this world's instructions.
+The WebUI has two tabs: **Robot** and **Configuration**. The Robot tab puts everything on one screen:
+
+- **Top half: the dashboard**, scrollable.
+  - The world: its name (click to rename), how it was recognised, other known worlds, and the agent.
+  - Right now: where the robot and the player are and in which areas, what the robot is doing, the
+    wondering countdown, and the active LLM endpoint with its test dots.
+  - Connection details.
+  - The robot's memory: the todo list (click a mark to go pending → in progress → done), what's on
+    its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent
+    activity, and this world's instructions.
+  - The selected console response.
+- **Bottom half: Automatic, the Manual console and the Nanny Cam,** side by side.
+
+On narrow windows everything stacks and the page scrolls.
 
 ## MCP server
 
@@ -459,7 +500,7 @@ everything back (endpoints and keys stay).
 
 ## Nanny Cam
 
-The **Nanny Cam** tab draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
+The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
 and no libraries:
 
 - **Scan** runs a scan of the chosen radius, same as `#scan`. Every new scan replaces Sight.

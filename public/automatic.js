@@ -162,8 +162,7 @@
   resetBtn.addEventListener('click', () => window.ptolemy.send({ type: 'pilotReset' }));
 
   document.addEventListener('ptolemy:tab', (ev) => {
-    if (ev.detail !== 'automatic') return;
-    input.focus();
+    if (ev.detail !== 'robot') return;
     log.scrollTop = log.scrollHeight; // it may have filled while hidden
   });
 })();
