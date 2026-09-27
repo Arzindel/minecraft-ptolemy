@@ -55,6 +55,12 @@
       </dl>
             </div>
           </section>
+          <section class="card card-settings" id="dash-settings-card">
+            <header class="card-head"><h3>Chat &amp; wondering</h3></header>
+            <div class="card-body">
+              <form class="config-form dash-settings" id="robot-settings" onsubmit="return false"></form>
+            </div>
+          </section>
           <section class="card card-inspect" id="dash-inspect-card">
             <header class="card-head"><h3>Selected response</h3></header>
             <div class="card-body">
@@ -121,7 +127,7 @@
           </div>
           <div class="cam-view">
             <canvas id="cam-canvas"></canvas>
-            <div class="cam-empty" id="cam-empty">Nothing in sight yet. Press <strong>Scan</strong> (or run <code>#scan</code>).</div>
+            <div class="cam-empty" id="cam-empty"><span>Nothing in sight yet. Press <strong>Scan</strong> (or run <code>#scan</code>).</span></div>
             <div class="cam-tooltip" id="cam-tooltip" hidden></div>
           </div>
           <p class="hint"><span id="cam-info">No sight yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>

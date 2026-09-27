@@ -71,7 +71,8 @@ const SCHEMA = [
     tab: 'automatic',
     group: 'Wondering',
     help: 'While wondering, the robot is prompted to "act natural" whenever it has been idle for a while. '
-      + 'The Off / On / Always on switch is on the Automatic tab.',
+      + 'The Off / On / Always on switch is in the Automatic panel. The robot can change all of these itself when asked in '
+      + 'the chat.',
     fields: [
       { key: 'wonder.mode', label: 'Mode', type: 'select', hidden: true, default: 'off',
         options: [{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }, { value: 'always', label: 'Always on' }] },
@@ -152,9 +153,10 @@ const SCHEMA = [
   },
 ];
 
+// Groups on the 'automatic' tab (chat and wondering) aren't a Configuration sub-tab: the WebUI shows
+// them on the Robot tab, where they're changed more often.
 const TABS = [
   { id: 'llm', label: 'LLM' },
-  { id: 'automatic', label: 'Automatic' },
   { id: 'robot', label: 'Robot & paths' },
   { id: 'system', label: 'System' },
 ];

@@ -377,6 +377,7 @@ class Pilot extends EventEmitter {
   /** The conversation as API messages, trimmed to the configured budget. */
   _render(config, tools, textMode) {
     const system = systemPrompt({
+      name: this.settings.get('chat.name') || 'Ptolemy',
       player: this.bridge.player,
       instructions: this.settings.get('llm.instructions'),
       tools,

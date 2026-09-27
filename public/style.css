@@ -329,8 +329,11 @@ code, pre, input { font-family: var(--mono); }
 .cam-empty {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
   color: var(--muted);
   pointer-events: none;
 }
@@ -763,3 +766,19 @@ code, pre, input { font-family: var(--mono); }
   .robot-bottom > .pilot, .robot-bottom > .console, .robot-bottom > .cam { height: 480px; }
   .robot-top .dashboard-grid { overflow: visible; }
 }
+
+/* Dashboard cards keep their own height: long lists scroll inside the card instead of stretching the row. */
+.dashboard-grid { align-items: start; }
+.dashboard-grid .card { max-height: 340px; }
+.dashboard-grid .card-body { overflow-y: auto; min-height: 0; }
+.dashboard-grid .card-inspect .inspect { max-height: none; }
+
+/* Chat & wondering settings in a dashboard card: label and input only. */
+.dash-settings { padding: 0; overflow: visible; }
+.dash-settings .config-group { margin-top: 4px; }
+.dash-settings .config-group + .config-group { margin-top: 14px; }
+.dash-settings .config-row { grid-template-columns: minmax(0, 1fr) 120px; }
+.dash-settings .config-row .config-default { display: none; }
+.dash-settings .config-row-wide { grid-template-columns: 1fr; }
+.dash-settings .config-row-wide textarea { min-height: 90px; }
+.dash-settings .config-row-wide .btn { justify-self: start; }

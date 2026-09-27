@@ -6,6 +6,8 @@
 
 (() => {
   const form = document.getElementById('config-form');
+  // Settings groups that aren't on a Configuration sub-tab (chat, wondering) go on the Robot tab.
+  const robotSettings = document.getElementById('robot-settings');
   const subtabs = document.getElementById('config-subtabs');
   const worldLabel = document.getElementById('config-world');
   const resetButton = document.getElementById('config-reset');
@@ -17,6 +19,8 @@
 
   function render(msg) {
     form.textContent = '';
+    robotSettings.textContent = '';
+    const subtabIds = new Set(msg.tabs.map((t) => t.id));
     subtabs.textContent = '';
     for (const tab of msg.tabs) {
       const b = document.createElement('button');
@@ -88,7 +92,11 @@
         section.append(row);
         inputs.set(field.key, { input, field });
       }
-      form.append(section);
+      if (subtabIds.has(group.tab)) form.append(section);
+      else {
+        delete section.dataset.subtab;
+        robotSettings.append(section);
+      }
     }
 
     // Per-world settings can become the starting point for worlds seen from now on.

@@ -136,6 +136,7 @@ class McpServer {
         } catch { /* no agent: memory shown in world coordinates */ }
         const memory = this.worlds && this.worlds.current ? this.worlds.current.promptBlock(frame) : '';
         const text = `${systemPrompt({
+          name: this.settings.get('chat.name') || 'Ptolemy',
           player: this.bridge.player,
           instructions: this.settings.get('llm.instructions'),
           tools: this.toolbox.list(),

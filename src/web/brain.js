@@ -41,6 +41,7 @@ class Brain {
       worlds: this.worlds,
       notify: (text) => this.pilot.notice(text),
       activity: () => this.pilot.touch(),
+      setWonder: (mode) => this.wonder.setMode(mode),
     });
     this.pilot = new Pilot({ settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds });
     this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds });
