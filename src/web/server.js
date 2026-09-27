@@ -10,6 +10,7 @@ const { WorldKnowledge } = require('../agent/world');
 const { Navigator, pathMessage } = require('../agent/navigator');
 const { Settings } = require('../settings');
 const { getAgentPose, facingFromRotation } = require('../agent/pose');
+const { nearbyEntities, countsText, MAX_ENTITIES } = require('../agent/entities');
 const { MAX_IN_FLIGHT_LIMIT } = require('../minecraft/bridge');
 const { Brain } = require('./brain');
 
@@ -285,6 +286,15 @@ class WebServer {
         this._scan(radius);
         return;
       }
+      case 'entities': {
+        const radius = args[0] ? Number(args[0]) : 16;
+        if (!(Number.isInteger(radius) && radius >= 1 && radius <= 48)) {
+          say('Usage: #entities [radius 1-48], mobs, animals, players and dropped items around the agent (default 16).');
+          return;
+        }
+        this._entities(radius);
+        return;
+      }
       case 'inflight': {
         const n = Number(args[0]);
         if (args[0] && Number.isInteger(n) && n >= 1) {
@@ -380,6 +390,27 @@ class WebServer {
     } catch (err) {
       this._addLog('system', `Scan failed: ${err.message}`);
       return null;
+    }
+  }
+
+  /** List what is around the agent, with every command reply behind it (to check the stitching). */
+  async _entities(radius) {
+    if (!this.bridge.connected) {
+      this._addLog('system', 'Looking for entities needs Minecraft to be connected.');
+      return;
+    }
+    try {
+      const pose = await getAgentPose(this.bridge);
+      const { entities, raw } = await nearbyEntities(this.bridge, pose, radius);
+      const lines = entities.map((e) => `${e.name}${e.hostile ? ' (hostile)' : ''}${e.type ? ` [${e.type}]` : ''}: `
+        + `${e.x} ${e.y} ${e.z}, ${e.distance.toFixed(1)} blocks`);
+      const text = entities.length
+        ? `${entities.length}${entities.length === MAX_ENTITIES ? '+' : ''} entities within ${radius} blocks of the agent at `
+          + `${pose.x} ${pose.y} ${pose.z}: ${countsText(entities)}\n${lines.join('\n')}`
+        : `No entities within ${radius} blocks of the agent at ${pose.x} ${pose.y} ${pose.z}.`;
+      this._addLog('system', text, { commandLine: 'Entities', body: { entities, raw } });
+    } catch (err) {
+      this._addLog('system', `Looking for entities failed: ${err.message}`);
     }
   }
 

@@ -4,6 +4,7 @@ const { FORWARD, turnLeft, turnRight, getAgentPose } = require('../agent/pose');
 const { isSolid } = require('../../public/blocks');
 const { Frame } = require('../agent/frame');
 const players = require('../agent/players');
+const entities = require('../agent/entities');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
 // game commands and report what actually happened, since the game's own replies say "success"
@@ -15,6 +16,9 @@ const MAX_MOVE = 64;
 const MAX_BLOCKS_QUERY = 64;
 const MAX_WAIT_S = 60;
 const MAX_SCAN_RADIUS = 15;
+const MAX_ENTITY_RADIUS = 48;
+const DEFAULT_ENTITY_RADIUS = 16;
+const LIST_ENTITIES = 30;
 // Blocks that are everywhere: counted in scan summaries, but not listed one by one.
 const LIST_LIMIT_PER_TYPE = 5;
 const COMMON_THRESHOLD = 20;
@@ -291,6 +295,43 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   });
 
   add({
+    name: 'nearby_entities',
+    description: `Look for mobs, animals, players and dropped items around the robot (up to ${MAX_ENTITY_RADIUS} blocks away): `
+      + 'what each one is, where it is, how far, and which are hostile. They move, so positions are only true right now: '
+      + 'call it again before acting on one. To attack one, pass its position to attack (the robot walks beside it first).',
+    parameters: {
+      type: 'object',
+      properties: {
+        radius: { type: 'integer', minimum: 1, maximum: MAX_ENTITY_RADIUS, description: `How far to look (default ${DEFAULT_ENTITY_RADIUS}).` },
+      },
+    },
+    async run({ radius }) {
+      const r = clampInt(radius ?? DEFAULT_ENTITY_RADIUS, 1, MAX_ENTITY_RADIUS);
+      const pose = await getAgentPose(bridge);
+      const frame = await frameNow(pose);
+      const { entities: found } = await entities.nearbyEntities(bridge, pose, r);
+      if (!found.length) return `Nothing (no mobs, animals, players or items) within ${r} blocks of the robot.`;
+      const lines = [`Within ${r} block${r === 1 ? '' : 's'} of the robot, nearest first (a snapshot: they move): ${entities.countsText(found)}.`];
+      for (const e of found.slice(0, LIST_ENTITIES)) {
+        const tags = [
+          e.type && !['item', 'player'].includes(e.type) && entities.typeGuess(e.name) !== e.type && `a ${e.type.replace(/_/g, ' ')}`,
+          e.hostile && 'hostile',
+          e.player && 'player, height may be their head',
+          e.item && 'dropped item: collect picks it up from nearby',
+        ].filter(Boolean).join(', ');
+        const where = areaOf(e);
+        lines.push(`- ${e.name}${tags ? ` (${tags})` : ''}: ${frame.fmt(e.x, e.y, e.z)}, ${e.distance.toFixed(1)} blocks away`
+          + `${where ? `, in ${where}` : ''}`);
+      }
+      if (found.length > LIST_ENTITIES) lines.push(`(+${found.length - LIST_ENTITIES} more, further away)`);
+      if (found.some((e) => e.name === 'Unidentified entity')) {
+        lines.push('Unidentified entities are there, but the game didn\'t say what they are.');
+      }
+      return lines.join('\n');
+    },
+  });
+
+  add({
     name: 'locate',
     description: 'Translate one position between the two systems: give it relative (e.g. {forward: 2, down: 1}) or world '
       + '({x: 5, y: 89, z: -3}) and get both, plus the block there and any named area it is in.',
@@ -495,7 +536,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
   add({
     name: 'attack',
     description: 'Attack whatever mob or player is in the cell beside the robot in a direction (or at a position: the robot '
-      + 'walks beside it first).',
+      + 'walks beside it first). nearby_entities says where mobs are.',
     destructive: true,
     parameters: { type: 'object', properties: { direction: dirParam('Which way to attack.'), ...POSITION_PROPS } },
     async run(args) {

@@ -36,6 +36,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
 | Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
 | Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
+| Seeing mobs, animals, players and dropped items (`nearby_entities`, `#entities`) | ✅ New, needs real-world testing |
 | Automatic mode: LLM control (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic, any OpenAI-compatible server) | ✅ New, needs real-world testing |
 | Endpoint tests (connection, model, tool calling) | ✅ New |
 | Instructions from in-game chat (`Ptolemy, come here`) | ✅ New |
@@ -106,6 +107,7 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#flypathfind` / `#flypathwalk` / `#flypathfindwalk` | The same, but taking the shortest route through the air |
 | `#pathsafe on\|off` | On (default): if the agent isn't where it should be after a step, keep checking for up to 2s before calling it a failure. That costs nothing when steps succeed straight away. Off: check once |
 | `#pathstop` | Stop a running walk after the current step |
+| `#entities` / `#entities <radius>` | List the mobs, animals, players and dropped items within `radius` blocks of the agent (default 16, up to 48): what each is, where, how far, and which are hostile. The log entry's details hold every raw command reply, to check how they were matched up. See [Seeing entities](#seeing-entities) |
 | `#probe` / `#probe all` | Run every read-only agent command (getposition, and detect / detectredstone / inspect / inspectdata in all six directions, getitemcount / getitemdetail / getitemspace for slot 1, or all 27 slots with `all`) and list the data each one returns |
 | `#cmdversion <value>` | Set the `body.version` sent with every command request: `1` (the default), a version string like `1.21.0`, or `off` to leave it out. Some commands may answer differently depending on it |
 | `#raw <json>` | Send a hand-written WebSocket message exactly as given (a missing `header.requestId` is filled in). The reply is logged as an unmatched message |
@@ -391,6 +393,7 @@ report what really happened, because the game says "success" even when the robot
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
 | `teleport_to_player` | `agent tp`, only when the request asks for a teleport |
 | `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
+| `nearby_entities` | Mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. See [Seeing entities](#seeing-entities) |
 | `locate` | One position, given relative or world, in both forms, plus the block there and its area |
 | `collect`, `drop` | Pick up items nearby, or drop items from a slot |
 | `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked |
@@ -407,6 +410,24 @@ report what really happened, because the game says "success" even when the robot
 | `run_command` | Any Minecraft command, with the game's raw reply: the escape hatch for everything else |
 
 `run_command` and `destroy`/`attack` can be turned off under **Tools and MCP**.
+
+### Seeing entities
+
+Blocks stay put, so a scan remembers them. Mobs don't, and no single Bedrock command says both what an entity
+is and where it is. `nearby_entities` (and `#entities`) sends a few commands at once, centred on the agent, and
+matches their answers by each entity's `uniqueId`:
+
+| Command | What it tells |
+| --- | --- |
+| `querytarget @e[x=..,y=..,z=..,r=..,type=!agent,type=!xp_orb,c=64]` | Where every entity is (up to the 64 nearest), but not what it is |
+| `testfor` with the same selector | The names of what's there (`Cow`, `Zombie`, `Alex`), but not where |
+| `querytarget @e[...,name=<name>]` for each name | Which entities carry that name: players and name-tagged mobs |
+| `querytarget @e[...,type=<name as an id>]` for each name | Which are that type (`Zombie Villager` → `zombie_villager`) |
+| `querytarget @e[...,family=monster]`, `type=item`, `type=player` | Which are hostile, dropped items or players |
+
+Anything the game won't name ends up as "Unidentified entity" (a game language other than English can cause
+that, since the type is guessed from the English name). Positions are a snapshot, so to attack a mob the LLM
+looks, attacks the position (the robot walks beside it first), and looks again.
 
 ### From the in-game chat
 

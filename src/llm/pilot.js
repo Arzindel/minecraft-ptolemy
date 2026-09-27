@@ -14,7 +14,7 @@ const STREAM_FLUSH_MS = 120;
 // Flying and teleporting are only allowed when the request itself asks for them.
 const FLIGHT_WORDS = /\b(fly|flies|flying|flew|flight|teleport\w*|tp)\b/i; // how often streamed text is pushed to the WebUI
 // Tools whose result is a snapshot: once a newer one exists, the older ones are left out of the prompt.
-const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'get_memory', 'todo_write']);
+const SNAPSHOT_TOOLS = new Set(['get_status', 'scan', 'nearby_entities', 'get_memory', 'todo_write']);
 
 /**
  * Automatic mode: takes requests (from the WebUI, the in-game chat, or the wondering timer) and

@@ -108,7 +108,7 @@ class McpServer {
             description: t.description,
             inputSchema: t.parameters,
             annotations: {
-              readOnlyHint: ['get_status', 'scan', 'get_blocks', 'get_memory'].includes(t.name),
+              readOnlyHint: ['get_status', 'scan', 'get_blocks', 'nearby_entities', 'get_memory'].includes(t.name),
               destructiveHint: Boolean(t.destructive || t.raw),
             },
           })),
