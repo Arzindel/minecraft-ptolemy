@@ -17,10 +17,14 @@
     return node;
   }
 
+  // The Connection and Selected response cards are in the page already; the rest go between them.
+  const inspectCard = document.getElementById('dash-inspect-card');
+  const connectionCard = root.querySelector('.card-connection');
+
   function card(title, id, extraHead) {
     const body = el('div', { className: 'card-body', id: `dash-${id}` });
     const box = el('section', { className: `card card-${id}` }, el('header', { className: 'card-head' }, el('h3', { textContent: title }), extraHead || null), body);
-    root.append(box);
+    root.insertBefore(box, inspectCard);
     return body;
   }
 
@@ -57,6 +61,7 @@
 
   const worldBody = card('World', 'world');
   const nowBody = card('Right now', 'now');
+  root.insertBefore(connectionCard, nowBody.parentElement.nextSibling);
   const todoBody = card('Todo list', 'todos', (() => {
     const b = el('button', { type: 'button', className: 'btn btn-ghost btn-small', textContent: 'Clear done' });
     b.addEventListener('click', () => op('todoClearDone'));

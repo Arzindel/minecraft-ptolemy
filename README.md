@@ -32,7 +32,7 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | WebSocket bridge to Minecraft | ✅ Working |
 | WebUI: header with connection status | ✅ Working |
 | Manual mode: raw command console | ✅ Working |
-| Information panel (connection info, response inspector) | ✅ Basic |
+| Robot tab: dashboard, Automatic, Manual console and Nanny Cam on one screen | ✅ New |
 | Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
 | Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
 | Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
@@ -41,7 +41,6 @@ The LLM reasons over the stored map, and the game is only asked about what might
 | Instructions from in-game chat (`Ptolemy, come here`) | ✅ New |
 | Wondering (the robot acts on its own when idle) | ✅ New |
 | World Memory per world: named areas, todo list, thoughts, notes, per-world settings | ✅ New |
-| Dashboard | ✅ New |
 | MCP server (the same tools for Claude Desktop, LM Studio, Cursor...) | ✅ New |
 
 ## Requirements
@@ -124,7 +123,7 @@ message from the game that Ptolemy can't match to a command or event is logged t
 arrives unnoticed.
 
 Click a response line to see the raw JSON the game sent back in the
-Information panel.
+dashboard's Selected response card.
 
 ### Configuration
 
@@ -215,7 +214,7 @@ and stays put. So the pathfinder plans over what the robot knows, and the walker
 
 ## Automatic mode (LLM)
 
-The **Automatic** tab is a chat with the robot. Type a request ("come to me", "dig a 3x3 hole in front
+The **Automatic** panel (bottom left of the Robot tab) is a chat with the robot. Type a request ("come to me", "dig a 3x3 hole in front
 of you", "what's around you?") and the LLM works it out with the robot's tools, one call at a time:
 it calls a tool, reads what actually happened, and decides what to do next, until it answers without
 calling a tool. Every tool call shows up in the transcript (click one to see the full result) and in
@@ -265,6 +264,27 @@ Small models mix up coordinate systems easily, so the two never share names:
 
 Internally, relative positions are [left, up, forward], so facing south (y-rot 0) they're simply
 world − robot. The other facings are that, rotated (`src/agent/frame.js`).
+
+### Exact or near: where go_to stops
+
+`go_to` has a `precision` option (the console takes `near` / `exact` after the target):
+
+- **exact:** end on the target cell itself. For the player, that's the cell your feet are in. A
+  reported eye height is corrected down to your feet.
+- **near:** end anywhere around the target: beside it, diagonal to it, or 2 blocks away, and up to 1
+  block higher or lower. It never stops straight above or below the target. Each possible stopping
+  cell costs extra to end on:
+  - beside the target: 10
+  - diagonal: 15
+  - 2 blocks away: 20
+  - per block of height difference: 10
+  - **plus the final spot multiplier (10) × the walking cost of standing there:** 10 on ground, 50 in
+    water or clinging to a wall, 400 in midair with the default costs.
+
+  So it would rather walk a few more blocks and stand on solid ground than stop beside the target in
+  the air.
+- **Defaults:** near for the player ("come here") and for named areas, exact for positions.
+- **Settings:** all of these numbers are under Configuration → Robot & paths, per world.
 
 ### Flying and teleporting only when asked
 
@@ -406,15 +426,22 @@ What it remembers:
 
 The LLM sees all of it in its system prompt, and MCP clients can read it with `get_memory`.
 
-## Dashboard
+## The Robot tab
 
-The **Dashboard** tab shows it all at once:
-- **The world**: its name (click to rename), how it was recognised, other known worlds, and the agent.
-- **Right now**: where the robot and the player are and in which areas, what the robot is doing, the
-  wondering countdown, and the active LLM endpoint with its test dots.
-- **The robot's memory**: the todo list (click a mark to go pending → in progress → done), what's on
-  its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent activity,
-  and this world's instructions.
+The WebUI has two tabs: **Robot** and **Configuration**. The Robot tab puts everything on one screen:
+
+- **Top half: the dashboard**, scrollable.
+  - The world: its name (click to rename), how it was recognised, other known worlds, and the agent.
+  - Right now: where the robot and the player are and in which areas, what the robot is doing, the
+    wondering countdown, and the active LLM endpoint with its test dots.
+  - Connection details.
+  - The robot's memory: the todo list (click a mark to go pending → in progress → done), what's on
+    its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent
+    activity, and this world's instructions.
+  - The selected console response.
+- **Bottom half: Automatic, the Manual console and the Nanny Cam,** side by side.
+
+On narrow windows everything stacks and the page scrolls.
 
 ## MCP server
 
@@ -457,7 +484,7 @@ everything back (endpoints and keys stay).
 
 ## Nanny Cam
 
-The **Nanny Cam** tab draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
+The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's **Sight** (the latest scan) in 3D with WebGL2, using the GPU
 and no libraries:
 
 - **Scan** runs a scan of the chosen radius, same as `#scan`. Every new scan replaces Sight.

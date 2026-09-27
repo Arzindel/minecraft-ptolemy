@@ -299,7 +299,10 @@ class WebServer {
       }
       case 'pathfind':
       case 'flypathfind':
-        this.navigator.pathfind(args, { fly: name.toLowerCase().startsWith('fly') });
+        this.navigator.pathfind(args.filter((a) => !/^(near|exact)$/i.test(a)), {
+          fly: name.toLowerCase().startsWith('fly'),
+          near: args.some((a) => /^near$/i.test(a)) ? true : args.some((a) => /^exact$/i.test(a)) ? false : null,
+        });
         return;
       case 'pathwalk':
       case 'flypathwalk':
@@ -316,7 +319,8 @@ class WebServer {
         const coords = [];
         for (const arg of args) {
           const m = /^(scan|retries)=(\d+)$/.exec(arg);
-          if (!m) coords.push(arg);
+          if (/^(near|exact)$/i.test(arg)) opts.near = arg.toLowerCase() === 'near';
+          else if (!m) coords.push(arg);
           else if (m[1] === 'scan') opts.scanRadius = Number(m[2]);
           else opts.retries = Number(m[2]);
         }
@@ -347,7 +351,8 @@ class WebServer {
           + '#scan [radius] (identify the blocks around the agent; radius 2 scans a 5x5x5 cube; '
           + 'without a radius, the configured default), '
           + '#inflight <n> (how many commands may be outstanding at once), '
-          + '#pathfind <x y z | @p> (plan a route that stays next to blocks; ~ = relative to the agent), '
+          + '#pathfind <x y z | @p> [near|exact] (plan a route that stays next to blocks; ~ = relative to the agent; near = stop '
+          + 'somewhere around the target, on the ground if possible; @p is near unless you say exact), '
           + '#pathwalk (walk it), #pathfindwalk <x y z | @p> [scan=7] [retries=3] (plan and walk, '
           + 'rescanning on the way), #flypathfind / #flypathwalk / #flypathfindwalk (the same, flying straight), '
           + '#pathsafe on|off, #pathstop, '

@@ -33,7 +33,10 @@ const FLOOD_LIMIT = 50000;
  * Plan a route for the agent (a 1x1x1 flyer) from `start` ({x, y, z, facing}) to a goal.
  *
  * The goal is { x, y, z } (end exactly there) or { x, y, z, cells } (end on any of those cells,
- * e.g. the cells around a player or around a solid block).
+ * e.g. the cells around a player or around a solid block). With `goal.arrival` (a Map of
+ * "x,y,z" -> cost), ending on a cell costs that much extra, plus `finalMultiplier` times what
+ * standing there costs (its walking support cost: ground 1, water 5, midair 40...), so the route
+ * prefers to end close to the target, standing on solid ground.
  *
  * The agent always faces where it travels: horizontal moves are `move forward`, preceded by
  * turns. Vertical moves don't need turning.
@@ -41,7 +44,7 @@ const FLOOD_LIMIT = 50000;
  * Returns { steps, cells, unknownSteps } or { error }.
  */
 function planPath(world, start, goal, {
-  hug = false, costs = DEFAULT_COSTS, turnCost = 1, unknownPenalty = 0.5,
+  hug = false, costs = DEFAULT_COSTS, turnCost = 1, unknownPenalty = 0.5, finalMultiplier = 10,
 } = {}) {
   // Cheapest possible move, so the distance estimate never overestimates (keeps A* optimal).
   const cheapest = hug ? Math.min(...Object.values(costs)) : 1;
@@ -56,7 +59,8 @@ function planPath(world, start, goal, {
   if (!open.length) {
     return { error: goal.cells ? 'every cell next to the target is solid' : `${goal.x} ${goal.y} ${goal.z} is a solid block` };
   }
-  if (isGoal(start.x, start.y, start.z)) return { steps: [], cells: [[start.x, start.y, start.z]], unknownSteps: 0 };
+  const arrival = goal.arrival || null;
+  if (!arrival && isGoal(start.x, start.y, start.z)) return { steps: [], cells: [[start.x, start.y, start.z]], unknownSteps: 0 };
   if (isSealed(world, open, start)) {
     return { error: 'the target is sealed in: every way to it is blocked by known solid blocks' };
   }
@@ -106,6 +110,9 @@ function planPath(world, start, goal, {
     return best;
   };
 
+  // Extra cost of ending on a goal cell (0 without arrival costs).
+  const endCost = (x, y, z) => (arrival ? (arrival.get(`${x},${y},${z}`) || 0) + finalMultiplier * supportCost(x, y, z) : 0);
+
   const stateKey = (x, y, z, f) => `${x},${y},${z},${f}`;
   let result = search(1, EXACT_EXPANSIONS);
   const approximate = result.gaveUp;
@@ -126,9 +133,17 @@ function planPath(world, start, goal, {
     let expansions = 0;
     while (queue.size) {
       const node = queue.pop();
+      // Ending here was the cheapest option left: done.
+      if (node.finish) return { reached: node.at, cameFrom };
       const k = stateKey(node.x, node.y, node.z, node.facing);
       if (node.cost > bestCost.get(k)) continue; // stale heap entry
-      if (isGoal(node.x, node.y, node.z)) return { reached: node, cameFrom };
+      if (isGoal(node.x, node.y, node.z)) {
+        // Without arrival costs the first goal cell reached is the answer. With them, stopping here
+        // becomes one more option in the queue, priced with its arrival cost; the search goes on in
+        // case a better place to stop is still ahead.
+        if (!arrival) return { reached: node, cameFrom };
+        queue.push(node.cost + endCost(node.x, node.y, node.z), { finish: true, at: node });
+      }
       if (++expansions > maxExpansions) return { gaveUp: true };
 
       const [fx, , fz] = FORWARD[node.facing];

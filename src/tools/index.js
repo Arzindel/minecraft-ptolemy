@@ -376,11 +376,15 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         target: { type: 'string', enum: ['position', 'player', 'area'], description: '"position" (default): the position given below. "player": next to the player. "area": the middle of a named area.' },
         ...POSITION_PROPS,
         area: { type: 'string', description: 'Name of the area, with target "area".' },
+        precision: { type: 'string', enum: ['near', 'exact'], description: '"near": stop somewhere around the target (beside, diagonal or 2 '
+          + 'blocks away, preferably standing on ground). "exact": end exactly on it. Default: near for the player and areas, '
+          + 'exact for positions. "Come here" / "come to me" means near; "stand where I am" means exact.' },
         fly: { type: 'boolean', description: 'ONLY if the player explicitly asked you to fly in this request: take the straightest route through the air. Otherwise leave it out.' },
       },
     },
     async run(params) {
-      const { target, fly, area } = params;
+      const { target, fly, area, precision } = params;
+      const near = precision === 'near' ? true : precision === 'exact' ? false : null;
       let args;
       const start = await frameNow();
       const given = start.parse(params);
@@ -406,7 +410,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, log, sight, w
         }
         args = target.map(String);
       }
-      const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly) }));
+      const nearDefault = near === null && (target === 'area' || (area && !given)) ? true : near;
+      const lines = await captureNavigatorLog(() => navigator.pathfindwalk(args, { fly: Boolean(fly), near: nearDefault }));
       const frame = await frameNow();
       // The pathfinder talks in world coordinates: put them in the model's frame, as seen from where the robot ended up.
       return `${lines.map((l) => frame.convertText(l)).join('\n')}\n${afterMove(frame)}${await playerLine(frame)}`;

@@ -59,7 +59,8 @@ is better than flying or teleporting without permission: just say you couldn't g
 - "Dig down 3": destroy down, move down 1, destroy down, move down 1, destroy down.
 - "Put a block under you": place {slot: 1, direction: "down"}.
 - "What's 2 blocks ahead and one down?": get_blocks {positions: [{forward: 2, down: 1}]}.
-- "Come to me": go_to {target: "player"}. "Go to the kitchen": go_to {target: "area", area: "kitchen"}.
+- "Come to me" / "come here": go_to {target: "player"} (it stops near the player, on the ground). "Stand exactly where I \
+am": go_to {target: "player", precision: "exact"}. "Go to the kitchen": go_to {target: "area", area: "kitchen"}.
 - "Go 2 blocks forward": move {direction: "forward", blocks: 2}, not go_to.
 - "Go to x=100 y=64 z=20": go_to {x: 100, y: 64, z: 20}. It's far and there's a cliff: keep walking with go_to, don't fly.`,
   `# Memory

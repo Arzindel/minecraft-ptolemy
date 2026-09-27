@@ -124,14 +124,9 @@ code, pre, input { font-family: var(--mono); }
 .layout {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 16px;
-  padding: 16px 20px 20px;
-}
-
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
+  display: flex;
+  flex-direction: column;
+  padding: 8px 20px 16px;
 }
 
 .dashboard { display: flex; flex-direction: column; min-height: 0; }
@@ -735,3 +730,36 @@ code, pre, input { font-family: var(--mono); }
 /* Streaming: a blinking caret after text that is still arriving. */
 .pilot-log .streaming .pilot-text::after { content: '▍'; color: var(--accent); animation: pulse 0.7s ease-in-out infinite alternate; margin-left: 2px; }
 .pilot-log .pilot-thinking details[open] pre { max-height: 200px; color: var(--muted); }
+
+/* --- Robot tab: dashboard on top, Automatic / Manual / Nanny Cam side by side below ---- */
+
+.robot-panel { gap: 12px; padding-top: 12px; }
+.robot-top { flex: 1 1 50%; min-height: 0; display: flex; }
+.robot-top .dashboard-grid { flex: 1; }
+.robot-bottom {
+  flex: 1 1 50%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.robot-bottom > .pilot, .robot-bottom > .console, .robot-bottom > .cam { min-height: 0; }
+.robot-bottom .console-toolbar, .robot-bottom .cam-toolbar { gap: 8px; }
+.robot-bottom .hint { font-size: 11px; }
+.robot-bottom .pilot .console-toolbar { row-gap: 6px; }
+.robot-bottom .pilot-log li { grid-template-columns: 84px minmax(0, 1fr); }
+.robot-bottom .pilot-log .pilot-tool, .robot-bottom .pilot-log .pilot-thinking { padding-left: 94px; }
+.robot-bottom .log li { grid-template-columns: 62px 14px minmax(0, 1fr); }
+.robot-bottom .command-form input { min-width: 0; }
+
+.card-connection .facts { font-size: 13px; }
+.card-inspect .inspect { max-height: 220px; min-height: 60px; margin: 0; }
+
+/* Narrow screens: everything stacks and the page scrolls. */
+@media (max-width: 1100px) {
+  body { height: auto; min-height: 100%; }
+  .layout, .tab-panel, .robot-top, .robot-bottom { flex: none; }
+  .robot-bottom { grid-template-columns: 1fr; }
+  .robot-bottom > .pilot, .robot-bottom > .console, .robot-bottom > .cam { height: 480px; }
+  .robot-top .dashboard-grid { overflow: visible; }
+}

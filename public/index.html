@@ -35,16 +35,36 @@
   </header>
 
   <main class="layout">
-    <section class="dashboard">
-      <nav class="tabs" role="tablist">
-        <button class="tab" role="tab" data-tab="dashboard" aria-selected="false">Dashboard</button>
-        <button class="tab" role="tab" data-tab="automatic" aria-selected="false">Automatic</button>
-        <button class="tab" role="tab" data-tab="manual" aria-selected="true">Manual</button>
-        <button class="tab" role="tab" data-tab="nannycam" aria-selected="false">Nanny Cam</button>
-        <button class="tab" role="tab" data-tab="config" aria-selected="false">Configuration</button>
-      </nav>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="robot" aria-selected="true">Robot</button>
+      <button class="tab" role="tab" data-tab="config" aria-selected="false">Configuration</button>
+    </nav>
 
-      <div class="tab-panel" data-panel="automatic" hidden>
+    <div class="tab-panel robot-panel" data-panel="robot">
+      <div class="robot-top">
+        <div class="dashboard-grid" id="dashboard">
+          <section class="card card-connection">
+            <header class="card-head"><h3>Connection</h3></header>
+            <div class="card-body">
+              <dl class="facts">
+        <dt>Minecraft</dt><dd id="info-connected">Not connected</dd>
+        <dt>Player</dt><dd id="info-player">–</dd>
+        <dt>From</dt><dd id="info-remote">–</dd>
+        <dt>Connected for</dt><dd id="info-uptime">–</dd>
+        <dt>In flight</dt><dd id="info-pending">0</dd>
+      </dl>
+            </div>
+          </section>
+          <section class="card card-inspect" id="dash-inspect-card">
+            <header class="card-head"><h3>Selected response</h3></header>
+            <div class="card-body">
+              <p class="muted small" id="inspect-caption">Click a line in the console to inspect the raw response.</p>
+      <pre class="inspect" id="inspect"></pre>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div class="robot-bottom">
         <div class="pilot">
           <div class="console-toolbar">
             <span class="console-title">Automatic</span>
@@ -68,9 +88,24 @@
           <p class="hint">Enter to send, Shift+Enter for a new line. Players can also type <code id="pilot-chat-hint">ptolemy, come here</code> in the game chat.
             MCP clients can connect to <code id="pilot-mcp-url">http://localhost:3000/mcp</code>.</p>
         </div>
-      </div>
-
-      <div class="tab-panel" data-panel="nannycam" hidden>
+      
+        <div class="console">
+          <div class="console-toolbar">
+            <span class="console-title">Console</span>
+            <label class="toggle">
+              <input type="checkbox" id="show-chat" checked> Show chat
+            </label>
+            <button class="btn btn-ghost btn-small" id="clear-log" type="button">Clear</button>
+          </div>
+          <ol class="log" id="log" aria-live="polite"></ol>
+          <form class="command-form" id="command-form" autocomplete="off">
+            <span class="prompt" aria-hidden="true">/</span>
+            <input type="text" id="command-input" placeholder="agent move forward" spellcheck="false">
+            <button class="btn btn-primary" type="submit">Run</button>
+          </form>
+          <p class="hint">Enter to run, ↑ / ↓ for history. The leading slash is optional. Type <code>#help</code> for console commands like <code>#subscribe</code>.</p>
+        </div>
+      
         <div class="cam">
           <div class="cam-toolbar">
             <span class="console-title">Nanny Cam</span>
@@ -91,9 +126,11 @@
           </div>
           <p class="hint"><span id="cam-info">No sight yet.</span> Drag to rotate, scroll to move closer, double-click to reset.</p>
         </div>
+      
       </div>
+    </div>
 
-      <div class="tab-panel" data-panel="config" hidden>
+    <div class="tab-panel" data-panel="config" hidden>
         <div class="config">
           <div class="console-toolbar">
             <span class="console-title">Configuration</span>
@@ -106,47 +143,8 @@
             <form class="config-form" id="config-form" onsubmit="return false"></form>
           </div>
         </div>
-      </div>
-
-      <div class="tab-panel" data-panel="dashboard" hidden>
-        <div class="dashboard-grid" id="dashboard"></div>
-      </div>
-
-      <div class="tab-panel" data-panel="manual">
-        <div class="console">
-          <div class="console-toolbar">
-            <span class="console-title">Console</span>
-            <label class="toggle">
-              <input type="checkbox" id="show-chat" checked> Show chat
-            </label>
-            <button class="btn btn-ghost btn-small" id="clear-log" type="button">Clear</button>
-          </div>
-          <ol class="log" id="log" aria-live="polite"></ol>
-          <form class="command-form" id="command-form" autocomplete="off">
-            <span class="prompt" aria-hidden="true">/</span>
-            <input type="text" id="command-input" placeholder="agent move forward" spellcheck="false">
-            <button class="btn btn-primary" type="submit">Run</button>
-          </form>
-          <p class="hint">Enter to run, ↑ / ↓ for history. The leading slash is optional. Type <code>#help</code> for console commands like <code>#subscribe</code>.</p>
-        </div>
-      </div>
-    </section>
-
-    <aside class="info-panel">
-      <h2 class="panel-title">Information</h2>
-
-      <dl class="facts">
-        <dt>Minecraft</dt><dd id="info-connected">Not connected</dd>
-        <dt>Player</dt><dd id="info-player">–</dd>
-        <dt>From</dt><dd id="info-remote">–</dd>
-        <dt>Connected for</dt><dd id="info-uptime">–</dd>
-        <dt>In flight</dt><dd id="info-pending">0</dd>
-      </dl>
-
-      <h3 class="panel-subtitle">Selected response</h3>
-      <p class="muted small" id="inspect-caption">Click a line in the console to inspect the raw response.</p>
-      <pre class="inspect" id="inspect"></pre>
-    </aside>
+      
+    </div>
   </main>
 
   <script src="app.js"></script>

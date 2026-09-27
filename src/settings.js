@@ -117,6 +117,14 @@ const SCHEMA = [
       { key: 'path.scanRadius', label: 'Rescan radius for #pathfindwalk', default: 7, min: 1, max: 15, step: 1,
         help: 'How far around the robot to scan when walking into unknown territory (7 = 15x15x15).' },
       { key: 'path.retries', label: 'Retries for #pathfindwalk', default: 3, min: 0, max: 50, step: 1 },
+      { key: 'path.finalMultiplier', label: 'Final spot multiplier (approximate go_to)', default: 10, min: 0, max: 1000, step: 1,
+        help: 'Where an approximate go_to stops costs this many times the walking cost of standing there: 10 on ground, 50 '
+          + 'in water or on a wall, 400 in midair with the default costs. So it would rather stop a little further away, on '
+          + 'solid ground, than right next to the target in the air.' },
+      { key: 'path.nearSide', label: 'Approximate stop: beside the target', default: 10, min: 0, max: 1000, step: 1 },
+      { key: 'path.nearDiagonal', label: 'Approximate stop: diagonal to the target', default: 15, min: 0, max: 1000, step: 1 },
+      { key: 'path.nearFar', label: 'Approximate stop: 2 blocks away', default: 20, min: 0, max: 1000, step: 1 },
+      { key: 'path.nearHeight', label: 'Approximate stop: per block higher or lower', default: 10, min: 0, max: 1000, step: 1 },
       { key: 'path.safe', label: 'Safe mode (#pathsafe)', type: 'boolean', default: true,
         help: 'If the agent isn\'t where it should be after a step, keep checking for up to 2s before '
           + 'calling it a failure. Costs nothing when steps succeed straight away.' },
