@@ -536,7 +536,7 @@ report what really happened, because the game says "success" even when the robot
 | `turn` | Turn left, right or around, or face north/south/east/west |
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
 | `teleport_to_player` | `agent tp`, only when the request asks for a teleport (asking to fly isn't enough) |
-| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions as seen from the robot (forward, back, left, right, up = the cell above it, down = the cell under it). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after, and a failure says why (nothing to break, the cell isn't empty, the slot may be empty). `place` takes an inventory slot and only fills an empty cell |
+| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions as seen from the robot (forward, back, left, right, up = the cell above it, down = the cell under it). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. When nothing changed, the call fails (✗ in the transcript) and says why: nothing to break, a block that won't break, the cell isn't empty, a player, mob or robot standing in the way (looked up with `testfor` over the cell), or else probably an empty slot. `place` takes an inventory slot and only fills an empty cell |
 | `safe_destroy` | `destroy`, only if the block is the one named (`oak_log`): compared by name, then with `testforblock` |
 | `replace`, `safe_replace` | Break whatever is in the cell, then place from a slot: it always ends with the new block, unless the slot is empty (it only breaks) or the old block can't be broken. `safe_replace` only if the block there is the one named |
 | `hold`, `release` | Keep an inventory slot (1-26) stocked with an item, or stop. See [Inventory](#inventory) |
@@ -616,7 +616,7 @@ and whether it listens and answers at all, are in the **Chat & wondering** card 
   default, comma-separated). `Ptolemy, stop` on its own still just stops. Requests from the **WebUI never
   interrupt**, not even wondering: they wait their turn, and the Stop button is there to cut in.
 - **Distracted:** a chat message calling the robot (from a player or another robot) is missed now and then
-  (**Distracted: chance to miss a message**, 5% by default). It shows in the transcript, crossed out, but the
+  (**Distracted: chance to miss a message**, 1% by default). It shows in the transcript, crossed out, but the
   model never sees it and nothing is interrupted. Messages containing an exception mark (**Distracted: never
   miss messages with**, `!` by default, comma-separated) are never missed, and neither are a bare
   `Ptolemy, stop` or anything from the WebUI.

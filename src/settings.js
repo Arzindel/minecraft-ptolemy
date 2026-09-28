@@ -113,7 +113,7 @@ const SCHEMA = [
         help: 'Comma-separated, for when "Players can always interrupt" is off. A player calling the robot always '
           + 'interrupts its wondering; while it works on a request, new ones wait their turn unless they contain one of '
           + 'these words: then it drops what it\'s doing and answers. "Ptolemy, stop" on its own still just stops.' },
-      { key: 'chat.distractedChance', label: 'Distracted: chance to miss a message (%)', default: 5, min: 0, max: 100, step: 0.5,
+      { key: 'chat.distractedChance', label: 'Distracted: chance to miss a message (%)', default: 1, min: 0, max: 100, step: 0.5,
         help: 'A chat message calling the robot (from a player or another robot) is missed this often: it shows in the '
           + 'transcript as missed, but the model never sees it and nothing is interrupted. Messages with an exception mark '
           + '(below), a bare "Ptolemy, stop" and anything from the WebUI are never missed. 0: always listens.' },

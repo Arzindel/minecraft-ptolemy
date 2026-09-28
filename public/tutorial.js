@@ -41,7 +41,7 @@
       </table>`],
     ['distracted', 'Distracted', `
       <p>Now and then the robot doesn't catch what's said to it in the chat: <b>Distracted: chance to miss a message</b>
-        (5% by default). A missed message shows in the Automatic transcript, crossed out, but the model never sees it,
+        (1% by default). A missed message shows in the Automatic transcript, crossed out, but the model never sees it,
         and nothing is interrupted: not a request, not wondering.</p>
       <ul>
         <li>A message with an <b>exception mark</b> is never missed. The default is <code>!</code>: "Ptolemy, come here!"
@@ -98,7 +98,10 @@
         <tr><td>replace</td><td><code>#replace 1 forward</code></td><td>Breaks what's there, then places: always ends with
           the new block, unless the slot is empty (then it only breaks).</td></tr>
         <tr><td>safe_replace</td><td><code>#safe_replace dirt 1 down</code></td><td>Replaces only if the block there is that block.</td></tr>
-      </table>`],
+      </table>
+      <p>When nothing changed, the action fails (✗ in the transcript) and says why: nothing to break, a block that won't
+        break, the cell isn't empty (use replace), a player, mob or robot standing in the way, or else probably an empty
+        inventory slot.</p>`],
     ['inventory', 'Inventory', `
       <p>The agent has 27 slots (three rows of nine). Nothing can read them, but they can be written, so Ptolemy keeps
         chosen slots stocked instead of knowing what's in them.</p>

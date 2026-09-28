@@ -199,7 +199,22 @@ function createToolbox({
 
 
 
-  /** Run `agent <verb> <direction>` and report what changed in that cell. */
+  /**
+   * What stands in a cell (players, mobs, another robot): names, from testfor over the cell and the ones
+   * below and above it (a player or tall mob standing below reaches up into it, and a position can be
+   * read at eye height). Only asked after a placement failed, so a neighbour now and then is fine. The
+   * robot itself is left out.
+   */
+  async function entitiesIn(x, y, z) {
+    const res = await bridge.sendCommand(`testfor @e[x=${x},y=${y - 1},z=${z},dx=0,dy=2,dz=0]`, { quiet: true });
+    return entities.parseNames(res).map(entities.displayName).filter((n) => !/\bagent\b/i.test(n));
+  }
+
+  /**
+   * Run `agent <verb> <direction>` and report what changed in that cell. Throws (an error the model
+   * sees as a failed call) when nothing changed, saying why: nothing to break, a block that won't break,
+   * a cell that isn't empty, someone standing in the way, or (likely) an empty inventory slot.
+   */
   async function actOnCell(verb, direction, extra = '') {
     const pose = await getAgentPose(bridge);
     const [dx, dy, dz] = offsetOf(direction, pose.facing);
@@ -216,15 +231,33 @@ function createToolbox({
     const where = `${direction} of the robot (${Frame.world(x, y, z)})`;
     const game = `The game said: "${res.statusMessage}".`;
     if (before !== after) return `The block ${where} went from ${before} to ${after}. ${game}`;
-    let hint = '';
-    if (verb === 'destroy' && after === 'Air') hint = ' There was nothing there to break.';
-    if (verb === 'place' && after !== 'Air' && isSolid(after)) {
-      hint = ` That cell isn't empty, so nothing could be placed there: use replace to break it and place in one go, or pick `
-        + 'another direction.';
-    } else if (verb === 'place') {
-      hint = ' Maybe that inventory slot is empty (hold keeps a slot stocked, give_item needs no slot).';
+    if (verb === 'destroy') {
+      if (!isSolid(after)) throw new Error(`nothing to break ${where}: it is ${after}. ${game}`);
+      throw new Error(`couldn't break the ${after} ${where}: it is still there (some blocks, like bedrock, can't be broken). ${game}`);
     }
-    return `Nothing changed ${where}: it is still ${after}. ${game}${hint}`;
+    if (verb === 'place' && isSolid(after)) {
+      throw new Error(`couldn't place ${where}: that cell isn't empty, it is ${after}. Use replace to break it and place in one `
+        + `go, or pick another cell. ${game}`);
+    }
+    if (verb === 'place') {
+      const inTheWay = await entitiesIn(x, y, z).catch(() => []);
+      if (inTheWay.length) {
+        throw new Error(`couldn't place ${where}: ${inTheWay.join(', ')} ${inTheWay.length > 1 ? 'are' : 'is'} in the way (a block `
+          + `can't go where a player, a mob or a robot stands). Wait for them to move, or pick another cell. ${game}`);
+      }
+      throw new Error(`nothing was placed ${where}: it is still ${after}, and nothing seems to stand there, so the inventory slot `
+        + `is probably empty (hold keeps a slot stocked). ${game}`);
+    }
+    throw new Error(`nothing changed ${where}: it is still ${after}. ${game}`);
+  }
+
+  /** Run fn; if it fails, say what already happened before it (e.g. walking to the block). */
+  async function withNote(note, fn) {
+    try {
+      return note + await fn();
+    } catch (err) {
+      throw note ? new Error(`${note}Then: ${err.message}`) : err;
+    }
   }
 
   /** The cell beside the robot in a direction: [x, y, z]. */
@@ -253,18 +286,15 @@ function createToolbox({
     return { ok: false, current };
   }
 
-  /** Break what's in a cell beside the robot (if anything), then place from a slot there. */
+  /**
+   * Break what's in a cell beside the robot (if it's solid: air, water and plants are placed into
+   * directly), then place from a slot there. Throws if either step fails, saying what was done.
+   */
   async function replaceCell(direction, slot) {
     const cell = await cellToward(direction);
     const before = await blockAt(...cell);
-    const lines = [];
-    if (before !== 'Air') {
-      lines.push(await actOnCell('destroy', direction));
-      const now = await blockAt(...cell);
-      if (now !== 'Air' && isSolid(now)) return `${lines.join(' ')} It is still ${now}, so nothing was placed.`;
-    }
-    lines.push(await actOnCell('place', direction, `${slot} `));
-    return lines.join(' ');
+    const broke = isSolid(before) ? `${await actOnCell('destroy', direction)} ` : '';
+    return withNote(broke, () => actOnCell('place', direction, `${slot} `));
   }
 
   /** The horizontal direction (forward, back, left, right) that points most towards a spot. */
@@ -704,7 +734,7 @@ function createToolbox({
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
-      return r.note + await actOnCell('destroy', r.direction);
+      return withNote(r.note, () => actOnCell('destroy', r.direction));
     },
   });
 
@@ -723,7 +753,7 @@ function createToolbox({
       if (r.error) throw new Error(r.error);
       const check = await blockMatches(await cellToward(r.direction), args.block);
       if (!check.ok) return `${r.note}Not destroyed: the block ${r.direction} of the robot is ${check.current}, not ${args.block}.`;
-      return r.note + await actOnCell('destroy', r.direction);
+      return withNote(r.note, () => actOnCell('destroy', r.direction));
     },
   });
 
@@ -741,7 +771,7 @@ function createToolbox({
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
-      return r.note + await actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `);
+      return withNote(r.note, () => actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `));
     },
   });
 
@@ -759,7 +789,7 @@ function createToolbox({
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
-      return r.note + await replaceCell(r.direction, clampInt(args.slot, 1, 27));
+      return withNote(r.note, () => replaceCell(r.direction, clampInt(args.slot, 1, 27)));
     },
   });
 
@@ -778,7 +808,7 @@ function createToolbox({
       if (r.error) throw new Error(r.error);
       const check = await blockMatches(await cellToward(r.direction), args.block);
       if (!check.ok) return `${r.note}Not replaced: the block ${r.direction} of the robot is ${check.current}, not ${args.block}.`;
-      return r.note + await replaceCell(r.direction, clampInt(args.slot, 1, 27));
+      return withNote(r.note, () => replaceCell(r.direction, clampInt(args.slot, 1, 27)));
     },
   });
 
@@ -823,6 +853,7 @@ function createToolbox({
       checkDirection(direction);
       const n = clampInt(quantity ?? 1, 1, 64);
       const res = await bridge.sendCommand(`agent drop ${clampInt(slot, 1, 27)} ${n} ${direction}`);
+      if (!res.ok) throw new Error(`couldn't drop from slot ${clampInt(slot, 1, 27)} (it may be empty): ${res.statusMessage}`);
       return `Dropped ${n} from slot ${clampInt(slot, 1, 27)} ${direction}. The game said: "${res.statusMessage}".`;
     },
   });
@@ -856,6 +887,7 @@ function createToolbox({
       const set = await bridge.sendCommand(`agent setitem ${inv.SCRATCH_SLOT} ${id} ${n} ${data}`);
       if (!set.ok) throw new Error(`the game refused the item "${id}": ${set.statusMessage}`);
       const res = await bridge.sendCommand(`agent drop ${inv.SCRATCH_SLOT} ${n} ${dir}`);
+      if (!res.ok) throw new Error(`made the ${id} but couldn't drop it: ${res.statusMessage}`);
       return `Dropped ${n} ${id}${data ? ` (variant ${data})` : ''} ${dir} of the robot. The game said: "${res.statusMessage}".`;
     },
   });

@@ -94,7 +94,12 @@ class FakeBridge {
     if ((m = /^agent place (\d+) (\w+)$/.exec(cmd))) {
       const c = cellAt(m[2]);
       const item = this.inventory.get(+m[1]);
-      if (!c || !item || isSolid(this.t.block(...c))) return { ok: false, statusCode: -1, statusMessage: 'Agent failed to place', body: {} };
+      // Nothing goes where a mob stands, or a player (two blocks tall: the position is their head).
+      const inTheWay = (this.entities || []).some((e) => {
+        const [ex, ey, ez] = [Math.floor(e.pos.x), Math.floor(e.pos.y), Math.floor(e.pos.z)];
+        return ex === c[0] && ez === c[2] && (ey === c[1] || (e.name === this.player && ey - 1 === c[1]));
+      });
+      if (!c || !item || inTheWay || isSolid(this.t.block(...c))) return { ok: false, statusCode: -1, statusMessage: 'Agent failed to place', body: {} };
       this.t.edits.set(c.join(','), item.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' '));
       return ok('Agent placed a block');
     }
@@ -114,7 +119,17 @@ class FakeBridge {
       return { ok: false, statusCode: -1, statusMessage: `The block at ${m[1]},${m[2]},${m[3]} is ${b} (expected: Air).`, body: { matches: false } };
     }
     if (/^querytarget @e/.test(cmd)) return ok('', { details: JSON.stringify((this.entities || []).map((e) => ({ uniqueId: e.id, position: e.pos, yRot: 0 }))) });
-    if (/^testfor @e/.test(cmd)) return ok(`Found ${(this.entities || []).map((e) => e.name).join(', ')}`, { victim: (this.entities || []).map((e) => e.name) });
+    if (/^testfor @e/.test(cmd)) {
+      // A volume (x, y, z with dx, dy, dz): the entities whose position is in those blocks.
+      const box = /x=(-?[\d.]+),y=(-?[\d.]+),z=(-?[\d.]+),dx=(\d+),dy=(\d+),dz=(\d+)/.exec(cmd);
+      const inBox = (e) => !box || [0, 1, 2].every((i) => {
+        const v = [e.pos.x, e.pos.y, e.pos.z][i];
+        return v >= +box[i + 1] && v < +box[i + 1] + +box[i + 4] + 1;
+      });
+      const names = (this.entities || []).filter(inBox).map((e) => e.name);
+      if (!names.length) return { ok: false, statusCode: -1, statusMessage: 'No targets matched selector', body: {} };
+      return ok(`Found ${names.join(', ')}`, { victim: names });
+    }
     if (/^querytarget/.test(cmd)) return ok('', { details: JSON.stringify([{ position: { x: this.p.x + 0.5, y: this.p.y + 1.62, z: this.p.z + 0.5 }, yRot: 0 }]) });
     if (cmd === 'list') return ok('There are 1/10 players online:\nArzindel', { players: 'Arzindel' });
     if ((m = /^gettopsolidblock (-?\d+) (-?\d+) (-?\d+)$/.exec(cmd))) {
