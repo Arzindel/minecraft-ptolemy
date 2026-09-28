@@ -147,20 +147,31 @@ class Brain {
     this._clockTimer.unref();
   }
 
-  /** Messages a newly opened page needs. */
+  /**
+   * Messages a newly opened page needs. Each is built on its own, so one that fails (and is logged)
+   * can't keep the others (the endpoints, the Commands tab...) from the page.
+   */
   initialMessages() {
-    return [
-      this.endpoints.message(),
-      this.commands.message(),
-      { type: 'pilotTranscript', entries: this.pilot.transcript },
-      this.pilot.state(),
-      this.wonder.state(),
-      this.clock.message(),
-      this.inventory.message(),
-      this.worlds.status(),
-      this._memoryMessage(),
-      this.positions,
-    ].filter(Boolean);
+    const builders = {
+      endpoints: () => this.endpoints.message(),
+      commands: () => this.commands.message(),
+      transcript: () => ({ type: 'pilotTranscript', entries: this.pilot.transcript }),
+      pilot: () => this.pilot.state(),
+      wonder: () => this.wonder.state(),
+      clock: () => this.clock.message(),
+      inventory: () => this.inventory.message(),
+      worlds: () => this.worlds.status(),
+      memory: () => this._memoryMessage(),
+      positions: () => this.positions,
+    };
+    return Object.entries(builders).map(([name, build]) => {
+      try {
+        return build();
+      } catch (err) {
+        this.log(`Couldn't send the page its ${name}: ${err.stack || err.message}`);
+        return null;
+      }
+    }).filter(Boolean);
   }
 
   /** Something typed in the Manual console: counts as activity for the wondering countdown. */
