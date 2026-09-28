@@ -17,33 +17,31 @@ care what actually happened. For an LLM to control it properly, the loop has to 
 act, sense again. Doing that naively means re-scanning the surroundings after every step, which
 is painfully slow.
 
-The fix is to scan less. Ptolemy works like a **Roomba**:
+The fix is to scan less, and remember everything. Ptolemy works like a **Roomba**:
 
-1. You give it a bounded region (a coordinate box) that the agent must stay inside.
-2. It maps that region once and remembers every block.
-3. After each action it only re-scans a small neighbourhood around the agent and updates the map.
+1. Everything the robot sees goes into a permanent **map** of the world, kept on disk.
+2. After every step and action it glances at a small cube around itself (**Vision**) and updates the map,
+   in the same round trip as the position check it does anyway.
+3. The LLM is told what the map knows around the robot with every request, plans over the map, and the
+   game is only asked about what's unknown or might have changed.
 
-The LLM reasons over the stored map, and the game is only asked about what might have changed.
+## What it does
 
-## Status
+Ptolemy is complete: everything below works, and changes from here on are fixes and adjustments.
 
-| Piece | State |
+| Area | What you get |
 | --- | --- |
-| WebSocket bridge to Minecraft | ✅ Working |
-| WebUI: header with connection status | ✅ Working |
-| Manual mode: raw command console | ✅ Working |
-| Robot tab: dashboard, Automatic, Manual console and Nanny Cam on one screen | ✅ New |
-| Manual mode: agent buttons (move, turn, detect, teleport...) | 🔜 Next |
-| Bounded-region mapping (the Roomba part) | 🟡 Named areas exist; mapping them block by block is next |
-| Scanning, pathfinding, Nanny Cam 3D view | ✅ Working |
-| The map: everything the robot sees, kept on disk per world; Vision keeps it live | ✅ New, needs real-world testing |
-| Seeing mobs, animals, players and dropped items (`scan` / `#scan` with `entities`, drawn in the Nanny Cam) | ✅ New, needs real-world testing |
-| Automatic mode: LLM control (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic, any OpenAI-compatible server) | ✅ New, needs real-world testing |
-| Endpoint tests (connection, model, tool calling) | ✅ New |
-| Instructions from in-game chat (`Ptolemy, come here`) | ✅ New |
-| Wondering (the robot acts on its own when idle) | ✅ New |
-| World Memory per world: named areas, todo list, thoughts, notes, per-world settings | ✅ New |
-| MCP server (the same tools for Claude Desktop, LM Studio, Cursor...) | ✅ New |
+| Connection | A WebSocket bridge Minecraft connects to with `/connect`, with a command queue that respects Bedrock's limits |
+| WebUI | A Robot tab (dashboard, Automatic chat, Manual console, 3D Nanny Cam), a Commands tab, a Configuration tab and a Tutorial tab |
+| Seeing | The map and Vision, block scans (`scan`, `#scan`), a surface view (`survey`, `#survey`), entities (mobs, animals, players, items) |
+| Moving | Pathfinding for walking and flying, with several ways of looking ahead, and move / turn for short trips |
+| Building | destroy, place, replace and their safe versions, with failures explained; an inventory kept stocked with `agent setitem` |
+| Automatic mode | Any OpenAI-compatible server (LM Studio, text-generation-webui, Ollama...), NVIDIA Build, OpenAI or Anthropic drives the robot with its tools |
+| Chat | Players call the robot by name in the game chat; other players' robots can talk to it; interrupting, and an occasional distracted moment |
+| Personality | Wondering when idle, thoughts that fade, Forget and ADHD, the game's time and weather |
+| Memory | Per world: named areas, a todo list, long-term memory, standing instructions, per-world settings |
+| MCP | The same tools for Claude Desktop, LM Studio, Cursor and other MCP clients |
+| Launcher | `start.bat` / `start.sh`: finds or downloads Node.js, installs, starts and opens the browser |
 
 ## Requirements
 
@@ -90,14 +88,18 @@ Then:
    ```
    (If Minecraft runs on another device, use the PC's LAN IP instead of `localhost`. Hover the connect
    command in the WebUI to see the addresses.)
-3. The header switches to **Connected as &lt;your name&gt;**. Type commands into the Manual console, e.g.
-   ```
-   agent create
-   agent move forward
-   agent turn left
-   agent detect forward
-   agent tp 0 64 0
-   ```
+3. The header switches to **Connected as &lt;your name&gt;**. If you don't have an agent in this world yet, a
+   **Create Agent** box covers the Automatic panel: press it.
+4. Pick an LLM under **Configuration → LLM**, then talk to the robot in the Automatic panel or the game
+   chat ("Ptolemy, come here"). The **Tutorial** tab explains everything else.
+
+The Manual console takes game commands directly, e.g.
+
+```
+agent move forward
+agent turn left
+agent tp 0 64 0
+```
 
 The leading `/` is optional.
 
@@ -484,7 +486,8 @@ The other LLM settings:
 - The timeout.
 - The conversation budget. Older requests are dropped, and their tool results shortened, to stay
   under it. It's about 4 characters per token.
-- The maximum length of one tool result.
+- The maximum length of one tool result, and of one scan result (scans summarize everything they looked at,
+  so they get a larger limit).
 - **Extra instructions** for every world. The prompt itself is in `src/llm/prompts.js`.
 
 ### Wondering
@@ -502,8 +505,9 @@ rolling timer.
 | **On** | Wonders until someone asks for something (WebUI or chat), then switches itself off |
 | **Always on** | Pauses while a request runs, then counts down again |
 
-A request always interrupts a wander in progress. Wondering waits while Minecraft is disconnected or
-the world has no agent. The interval, the step limit per wander (6) and the prompt itself are in the
+A player calling the robot in the chat interrupts a wander in progress; a request from the WebUI waits
+for it to finish (or use Stop), and another robot interrupts it only if **Robots can interrupt
+wondering** is on. Wondering waits while Minecraft is disconnected or the world has no agent. The interval, the step limit per wander (6) and the prompt itself are in the
 **Chat & wondering** card on the Robot tab. The robot can also switch wondering itself when asked in
 chat ("go do your own thing", "stop wandering around"). The prompt tells it that, now and then, it may
 say something in the chat to a player or to another robot nearby.
@@ -603,8 +607,8 @@ looks, attacks the position (the robot walks beside it first), and looks again.
 
 A chat message that mentions **Ptolemy** (anywhere, any case) is a request: `Ptolemy, come here`,
 `can ptolemy build a tower?`. A message that contains **Ptoless** is never a request, even if it also
-says Ptolemy, so you can talk about the robot without calling it. `Ptolemy, stop` stops it. Requests
-that arrive while it's busy wait their turn. The robot's own chat lines never trigger it. Both words,
+says Ptolemy, so you can talk about the robot without calling it. `Ptolemy, stop` stops it. What happens
+when it's already busy is described below. The robot's own chat lines never trigger it. Both words,
 and whether it listens and answers at all, are in the **Chat & wondering** card on the Robot tab.
 
 **Who can call it** (all in the **Chat & wondering** card):
@@ -677,7 +681,8 @@ empty memory and a copy of the per-world settings.
   memory. It also re-marks the game world to match.
 - **Without cheats, worlds can't be marked.** Ptolemy then uses a shared "Unmarked world" memory,
   and says so.
-- **A world without an agent** gets a **Create the agent** button on the Dashboard.
+- **A world without an agent** gets a **Create Agent** box over the Automatic panel (and a button on the
+  Dashboard's World card).
 
 What it remembers:
 
@@ -685,10 +690,11 @@ What it remembers:
 | --- | --- | --- |
 | **Areas** | Named boxes: "house", "kitchen", "farm". An area inside another is part of it ("kitchen in house"). The robot's and player's areas are shown everywhere, `go_to` can target an area, and the Nanny Cam outlines them | The LLM (`add_area`), the Dashboard, `#area` / `#boundary` |
 | **Todo list** | The robot's plan for multi-step work, like a coding agent's todo list: pending, in progress, done | The LLM (`todo_write`), the Dashboard |
-| **On its mind** | A few passing thoughts ("I want to see flowers") it may act on later, especially while wondering. Only the latest 10 are kept | The LLM (`add_thought`), the Dashboard |
+| **On its mind** | A few passing thoughts ("I want to see flowers") it may act on later, especially while wondering. They fade after a while and only the newest few are kept (see [Wondering](#wondering)) | The LLM (`add_thought`), the Dashboard, Forget and ADHD |
 | **Long-term memory** | Numbered entries to keep for good: facts, preferences, promises ("Arzindel likes birch"). The LLM saves them when asked to remember something or when it learns something worth keeping, and can update or drop them | The LLM (`remember`, `forget`), the Dashboard |
 | **Recent activity** | What it was asked lately and how it went | Automatic |
 | **Instructions for this world** | Standing rules added to the prompt in this world only | The Dashboard, the LLM (`set_world_instructions`) |
+| **Held inventory slots** | Which slots are kept stocked with what (see [Inventory](#inventory)) | The Dashboard, `#hold` / `#release`, the LLM (`hold`, `release`) |
 
 The LLM sees all of it in its system prompt, and MCP clients can read it with `get_memory`.
 
@@ -767,8 +773,8 @@ often, are in the **Chat & wondering** card on the Robot tab instead.
 
 - **LLM**: the endpoints, and how the model is used (temperature, token and step limits, the
   conversation budget, extra instructions for every world).
-- **Robot & paths**: walking path costs, scanning and path planning. These are marked **this world**:
-  each world keeps its own copy. A world seen for the first time starts from the defaults for new
+- **Robot & paths**: walking path costs, scanning, the map and Vision, the game clock, the inventory and
+  path planning. Path costs, scanning and path planning are marked **this world**: each world keeps its own copy. A world seen for the first time starts from the defaults for new
   worlds, and **Use these as defaults for new worlds** makes the current world's values the new defaults.
 - **System**: tool permissions, the MCP server, and the in-flight limit.
 
@@ -823,6 +829,8 @@ table get a stable colour derived from their name.
   `agent` commands).
 - **`src/web/server.js`** serves `public/` and relays status, commands, responses and chat to every
   open browser tab. It keeps a short log history, so a refreshed tab picks up where it left off.
+- **`src/web/brain.js`** wires everything above the robot's body together: world detection and memory,
+  the LLM endpoints, the pilot (Automatic mode), wondering, chat requests, the clock, the inventory and MCP.
 - **`public/`** is the WebUI in plain HTML, CSS and JS, with no build step.
 
 The only runtime dependency is [`ws`](https://github.com/websockets/ws), the WebSocket library.
@@ -854,8 +862,10 @@ src/
   web/brain.js           wires worlds, endpoints, the pilot, wondering, chat requests and MCP together
   settings.js            Configuration schema (sub-tabs, per-world fields), saved to data/
   commands.js            the Commands tab: tool, # and / command descriptions, and edits to them
-  agent/                 scanning, Vision, pose, pathfinding, walking (Navigator), entities,
-                         and frame.js: the robot-relative coordinates the model sees
+  agent/                 scanning, Vision, pose, pathfinding, walking (Navigator), entities, the ground
+                         survey, frame.js (the robot-relative coordinates the model sees), clock.js (the
+                         game's time and weather, and the {time_now}-style placeholders) and
+                         inventory.js (held slots, kept stocked with agent setitem)
   world/map.js           the map: every block seen, in 16x16x16 sub-chunks, saved per world
   world/manager.js       which world is open (the scoreboard marker), per-world folders
   world/memory.js        World Memory: areas, todos, thoughts, notes, journal, conversation
@@ -866,8 +876,6 @@ src/
   llm/prompts.js         system prompt, text-mode tool calls
   llm/pilot.js           the Automatic mode loop and conversation
   llm/wonder.js          wondering: the idle timer, Forget and ADHD
-  agent/clock.js         the game's time and weather (read-only), and the {time_now}-style placeholders
-  agent/inventory.js     held inventory slots, kept stocked with agent setitem
   mcp/server.js          MCP over HTTP at /mcp
   mcp/stdio.js           MCP over stdio, relaying to /mcp (npm run mcp)
 public/
@@ -882,8 +890,21 @@ bench/
                          FAKE_NO_AGENT=1 to start without an agent
 scripts/                 the launchers' helpers (download Node.js, check whether npm install is needed)
 start.bat, start.sh      the launchers: Node.js (or a private copy), npm install, start, open the browser
-abandoned-minimap-project/        old prototype, kept for reference only
 ```
+
+## Limits of the game
+
+Some things can't be done from outside the game without mods, and Ptolemy works around them:
+
+- **The agent can't sense anything itself.** `agent detect`, `inspect` and `getitem*` succeed but return no
+  data in regular Bedrock. Ptolemy sees with `testforblock`, `gettopsolidblock`, `querytarget` and `testfor`.
+- **The inventory can't be read**, only written with `agent setitem`, and a slot can't be emptied. Hence held
+  slots and the scratch slot.
+- **One agent per player.** Every Ptolemy drives only the agent of the player whose game is connected to it.
+- **Bedrock doesn't say which world is open.** Ptolemy marks each world with a scoreboard objective, which
+  needs cheats; without them, all worlds share one memory.
+- **Robots hear each other through the chat.** Another player's robot only reaches yours if its chat lines
+  arrive as chat events on your game.
 
 ## Safety notes
 

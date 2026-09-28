@@ -1,6 +1,6 @@
 {
   "name": "minecraft-ptolemy",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Drive the Minecraft Bedrock Edition agent from a WebUI, an LLM (LM Studio, text-generation-webui, NVIDIA Build, OpenAI, Anthropic) or MCP clients, over the game's built-in WebSocket.",
   "main": "src/index.js",
   "private": true,
