@@ -23,9 +23,10 @@ const STARTED_AT = Date.now();
 const LOG_HISTORY = 500;
 const MAX_SCAN_RADIUS = 15; // 31x31x31, about 30 seconds
 // The Nanny Cam gets the map this far around the robot (its Zoom goes up to here), and a fresh copy
-// once the robot has moved REGION_MOVE blocks from where the last one was centered.
-const MAP_VIEW_RADIUS = 30;
-const REGION_MOVE = 8;
+// once the robot has moved REGION_MOVE blocks from where the last one was centered. Only what the map
+// knows is sent (air left out), so a big radius costs what's been seen, not the whole cube.
+const MAP_VIEW_RADIUS = 100;
+const REGION_MOVE = 16;
 // Map changes are sent in batches; a batch bigger than this (a big scan) sends the whole region instead.
 const MAP_BATCH_MS = 100;
 const MAP_BATCH_LIMIT = 4000;
@@ -329,6 +330,17 @@ class WebServer {
           return;
         }
         this._look(radius ?? (what === 'entities' ? null : this.settings.get('scan.radius')), what);
+        return;
+      }
+      case 'survey': {
+        // #survey [radius]: the survey tool (gettopsolidblock on every column), its report in the log.
+        const radius = args[0] !== undefined ? Number(args[0]) : undefined;
+        if (args.length > 1 || (radius !== undefined && !(Number.isInteger(radius) && radius >= 1 && radius <= 24))) {
+          say('Usage: #survey [radius]: the height of every column around the agent, up to 24 blocks out (default 8).');
+          return;
+        }
+        this.brain.toolbox.call('survey', radius === undefined ? {} : { radius }, { origin: 'Console' })
+          .then((res) => say(res.text));
         return;
       }
       case 'inflight': {

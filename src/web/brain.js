@@ -2,7 +2,7 @@
 
 const path = require('path');
 const WebSocket = require('ws');
-const { createToolbox, sayInChat, isOwnChat } = require('../tools');
+const { createToolbox, sayInChat, isOwnChat, robotLine } = require('../tools');
 const { Pilot } = require('../llm/pilot');
 const { Wonder } = require('../llm/wonder');
 const { EndpointStore } = require('../llm/endpoints');
@@ -13,8 +13,11 @@ const { McpServer } = require('../mcp/server');
 const { CommandCatalog } = require('../commands');
 const { getAgentPose } = require('../agent/pose');
 const { allPlayers } = require('../agent/players');
+const { Clock, expandPlaceholders } = require('../agent/clock');
 
 const POSITION_POLL_MS = 4000;
+// Other robots heard in the chat within this long are named to the model (so it can talk to them).
+const ROBOT_MEMORY_MS = 10 * 60 * 1000;
 
 /**
  * Everything above the robot's body: world detection and memory, the LLM endpoints, the pilot
@@ -30,7 +33,16 @@ class Brain {
     const { bridge, settings } = deps;
 
     this.endpoints = new EndpointStore();
-    this.worlds = new WorldManager({ bridge, log: (text) => this.log(text) });
+    this.worlds = new WorldManager({
+      bridge,
+      log: (text) => this.log(text),
+      thoughtRules: () => ({ ttl: settings.get('thoughts.ttl'), max: settings.get('thoughts.max') }),
+    });
+    // The game's time and weather (read-only), and {time_now}-style placeholders filled in as messages go out.
+    this.clock = new Clock({ bridge });
+    this.clock.on('change', () => this.broadcast(this.clock.message()));
+    const placeholders = (text) => expandPlaceholders(text, { bridge, clock: this.clock });
+    this.robotsHeard = new Map(); // other robots' names -> when they last spoke in the chat
 
     this.toolbox = createToolbox({
       bridge,
@@ -48,6 +60,8 @@ class Brain {
         if (deps.vision) deps.vision.soon(); // look around after every action
       },
       setWonder: (mode) => this.wonder.setMode(mode),
+      clock: this.clock,
+      placeholders,
     });
     // Commands tab: editable descriptions of the tools (what the model reads), # and / commands.
     this.commands = new CommandCatalog({ tools: this.toolbox.tools });
@@ -55,9 +69,18 @@ class Brain {
     this.commands.on('change', () => this.broadcast(this.commands.message()));
 
     this.pilot = new Pilot({
-      settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands, map: deps.world,
+      settings,
+      endpoints: this.endpoints,
+      toolbox: this.toolbox,
+      bridge,
+      worlds: this.worlds,
+      commands: this.commands,
+      map: deps.world,
+      clock: this.clock,
+      placeholders,
+      robots: () => this._recentRobots(),
     });
-    this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds });
+    this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds, endpoints: this.endpoints });
     this.mcp = new McpServer({ toolbox: this.toolbox, settings, bridge, worlds: this.worlds, commands: this.commands });
 
     this.pilot.on('entry', (entry) => this.broadcast({ type: 'pilotEntry', entry }));
@@ -65,7 +88,7 @@ class Brain {
     this.pilot.on('state', (state) => this.broadcast(state));
     // "Default replies": what the model says goes back to where the request came from.
     this.pilot.on('say', ({ text, source }) => {
-      if (source === 'chat' && settings.get('chat.replies')) sayInChat(bridge, settings, text);
+      if ((source === 'chat' || source === 'robot') && settings.get('chat.replies')) sayInChat(bridge, settings, text);
     });
     this.wonder.on('state', (state) => this.broadcast(state));
     this.endpoints.on('change', () => {
@@ -110,6 +133,9 @@ class Brain {
     this.positions = null;
     this._poll = setInterval(() => this._pollPositions(), POSITION_POLL_MS);
     this._poll.unref();
+    this._clockAt = 0;
+    this._clockTimer = setInterval(() => this._tickClock(), 1000);
+    this._clockTimer.unref();
   }
 
   /** Messages a newly opened page needs. */
@@ -120,6 +146,7 @@ class Brain {
       { type: 'pilotTranscript', entries: this.pilot.transcript },
       this.pilot.state(),
       this.wonder.state(),
+      this.clock.message(),
       this.worlds.status(),
       this._memoryMessage(),
       this.positions,
@@ -137,17 +164,36 @@ class Brain {
   /**
    * A chat message is a request when it contains the wake word ("Ptolemy") and not the ignore
    * word ("Ptoless", for talking about the robot without calling it). "Ptolemy, stop" stops it.
+   * Lines from other players' robots count too (if allowed), but can't stop or interrupt a request.
    */
   chat(sender, message, type) {
     const { settings } = this;
-    if (!settings.get('chat.enabled') || typeof message !== 'string') return;
-    if (isOwnChat(message) || /^tellraw$/i.test(type || '')) return;
+    if (typeof message !== 'string' || isOwnChat(message)) return;
     const name = (settings.get('chat.name') || '').trim();
-    const ignore = (settings.get('chat.ignore') || '').trim();
-    if (!name) return;
-    if (!new RegExp(`\\b${escapeRe(name)}\\b`, 'i').test(message)) return;
-    if (ignore && message.toLowerCase().includes(ignore.toLowerCase())) return;
+    const robot = robotLine(message);
+    if (robot) {
+      // A line signed with this robot's own name is taken as its own (an echo that came late), so it can
+      // never answer itself; another robot with the same name can't be told apart anyway.
+      if (robot.name.toLowerCase() === name.toLowerCase()) {
+        if (!this._sameNameWarned && !(sender && sender === this.bridge.player)) {
+          this._sameNameWarned = true;
+          this.log(`A chat line signed "${robot.name}" wasn't this robot's. If another player's robot is also called `
+            + `${robot.name}, give one of them a different name (set_name, or the Wake word setting) so they can talk.`);
+        }
+        return;
+      }
+      this.robotsHeard.set(robot.name, Date.now());
+      if (settings.get('chat.enabled') && settings.get('chat.robots')) this._robotChat(robot);
+      return;
+    }
+    if (!settings.get('chat.enabled') || /^tellraw$/i.test(type || '')) return;
+    if (!name || !this._callsMe(message)) return;
 
+    const me = this.bridge.player;
+    if (settings.get('chat.onlyMe') && me && sender !== me) {
+      this.log(`Ignored ${sender}'s chat request: only ${me} can call ${name} ("Only my player can call it" is on).`);
+      return;
+    }
     const rest = message.replace(new RegExp(`[@!]?\\b${escapeRe(name)}\\b[\\s,:;!.?-]*`, 'ig'), ' ').trim();
     const reply = (text) => settings.get('chat.replies') && sayInChat(this.bridge, settings, text);
     if (/^(stop|halt|cancel|enough)[.!]*$/i.test(rest)) {
@@ -159,7 +205,43 @@ class Brain {
       return;
     }
     this.wonder.personRequested();
-    this.pilot.send(message, { source: 'chat', sender });
+    this.pilot.send(message, { source: 'chat', sender, interrupt: this._personInterrupt(rest) });
+  }
+
+  /** How far a person's request may cut in: anything, or only wondering (see chat.interruptAlways / interruptWords). */
+  _personInterrupt(text) {
+    if (this.settings.get('chat.interruptAlways')) return 'any';
+    const words = String(this.settings.get('chat.interruptWords') || '').split(',').map((w) => w.trim()).filter(Boolean);
+    return words.some((w) => new RegExp(`(^|[^\\w])${escapeRe(w)}([^\\w]|$)`, 'i').test(text)) ? 'any' : 'wonder';
+  }
+
+  /** Does this text call the robot by name (and not contain the ignore word)? */
+  _callsMe(text) {
+    const name = (this.settings.get('chat.name') || '').trim();
+    const ignore = (this.settings.get('chat.ignore') || '').trim();
+    if (!name || !new RegExp(`\\b${escapeRe(name)}\\b`, 'i').test(text)) return false;
+    return !(ignore && text.toLowerCase().includes(ignore.toLowerCase()));
+  }
+
+  /** Another robot said something in the chat: a request if it said this robot's name. */
+  _robotChat(robot) {
+    if (!this._callsMe(robot.text)) return;
+    this.pilot.send(robot.text, {
+      source: 'robot', sender: robot.name, interrupt: this.settings.get('chat.robotsInterrupt') ? 'wonder' : false,
+    });
+  }
+
+  /** Other robots heard in the chat lately, most recent first. */
+  _recentRobots() {
+    const now = Date.now();
+    return [...this.robotsHeard.entries()].filter(([, t]) => now - t < ROBOT_MEMORY_MS).sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  }
+
+  _tickClock() {
+    const every = this.settings.get('clock.seconds');
+    if (!every || !this.bridge.connected || Date.now() - this._clockAt < every * 1000) return;
+    this._clockAt = Date.now();
+    this.clock.refresh().catch(() => {});
   }
 
   // --- UI messages -----------------------------------------------------------------
@@ -171,7 +253,7 @@ class Brain {
     switch (msg.type) {
       case 'pilotSend':
         this.wonder.personRequested();
-        this.pilot.send(msg.text, { source: 'ui' });
+        this.pilot.send(msg.text, { source: 'ui', interrupt: this._personInterrupt(String(msg.text || '')) });
         return true;
       case 'pilotStop':
         this.pilot.stop();
@@ -297,7 +379,8 @@ class Brain {
         if (!args.length) say('Usage: #ask <request for the LLM>');
         else {
           this.wonder.personRequested();
-          this.pilot.send(text.replace(/^\S+\s*/, ''), { source: 'ui' });
+          const request = text.replace(/^\S+\s*/, '');
+          this.pilot.send(request, { source: 'ui', interrupt: this._personInterrupt(request) });
         }
         return true;
       case 'wonder':
@@ -395,6 +478,7 @@ class Brain {
 
   close() {
     clearInterval(this._poll);
+    clearInterval(this._clockTimer);
     this.wonder.close();
     if (this.worlds.current) this.worlds.current.save();
   }

@@ -5,7 +5,8 @@ const { isSolid } = require('../../public/blocks');
 const { Frame } = require('../agent/frame');
 const players = require('../agent/players');
 const { CLEAR } = require('../world/map');
-const { checkCells, unknownAround } = require('../agent/survey');
+const { checkCells, unknownAround, surveyColumns } = require('../agent/survey');
+const { placeholderHelp } = require('../agent/clock');
 const entities = require('../agent/entities');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
@@ -18,6 +19,9 @@ const MAX_MOVE = 64;
 const MAX_BLOCKS_QUERY = 64;
 const MAX_WAIT_S = 60;
 const MAX_SCAN_RADIUS = 15;
+// survey: gettopsolidblock on every column of a square (one command each: 17x17 = 289 at the default).
+const DEFAULT_SURVEY_RADIUS = 8;
+const MAX_SURVEY_RADIUS = 24;
 // The scan tool looks at everything up to this radius again; further out, only what isn't on the map.
 const FRESH_SCAN_RADIUS = 4;
 const LIST_ENTITIES = 30;
@@ -26,7 +30,10 @@ const ACT_POLLS = 6;
 const ACT_POLL_MS = 150;
 // Blocks that are everywhere: counted in scan summaries, but not listed one by one.
 const LIST_LIMIT_PER_TYPE = 5;
-const COMMON_THRESHOLD = 20;
+const COMMON_THRESHOLD = 20; // at least; a big scan counts as rare anything under 1 in 200 of its blocks
+// Scans this big or bigger (radius) get a top-down height grid of the whole area.
+const GRID_MIN_RADIUS = 2;
+const TRUNK = /\b(Log|Wood|Stem|Hyphae)$/;
 
 // Flying and teleporting are two different things, each allowed only when the request asks for it:
 // flying is go_to with fly (the robot moves block by block through the air), teleporting is an
@@ -127,8 +134,13 @@ const POSITION = {
  * @param {(text: string) => void} deps.notify   show a message in the WebUI
  * @param {() => void} [deps.activity]   called after every tool call (resets the wondering countdown)
  * @param {(mode: string) => void} [deps.setWonder]   switch wondering off / on / always
+ * @param {import('../agent/clock').Clock} [deps.clock]   the game's time and weather
+ * @param {(text: string) => Promise<string>} [deps.placeholders]   fills in {time_now} and friends
  */
-function createToolbox({ bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder }) {
+function createToolbox({
+  bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder, clock = null,
+  placeholders = async (text) => text,
+}) {
   const memory = () => {
     if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
     return worlds.current;
@@ -289,7 +301,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
     const mode = settings.get('llm.coordinates');
     const fresh = await scan(Math.min(r, FRESH_SCAN_RADIUS), { quiet: true });
     if (!fresh) throw new Error('the scan failed (see the console)');
-    if (r <= FRESH_SCAN_RADIUS) return summarizeScan(fresh, mode);
+    if (r <= FRESH_SCAN_RADIUS) return summarizeScan(fresh, mode, { grid: true });
     const { x, y, z } = fresh.agent.position;
     const pose = { x, y, z, yRot: fresh.agent.yRot };
     const unseen = unknownAround(world, pose, r);
@@ -297,7 +309,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
     const size = (2 * r + 1) ** 3;
     return mapSummary(world, pose, r, mode, `Looked at ${fresh.cells.length + unseen.length} of the ${size} blocks around you `
       + `(the nearest ${fresh.cells.length} again, plus everything not on your map yet); the rest is from your map. `
-      + `You are at ${Frame.world(x, y, z)}, facing ${compassName(((Math.round(pose.yRot / 90) % 4) + 4) % 4)}.`);
+      + `You are at ${Frame.world(x, y, z)}, facing ${compassName(((Math.round(pose.yRot / 90) % 4) + 4) % 4)}. `
+      + `Everything below covers the whole scan, ${r} blocks out in every direction.`, { grid: true });
   }
 
   add({
@@ -308,6 +321,11 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       const lines = [];
       lines.push(`Minecraft: connected as ${bridge.player || 'unknown player'}`
         + `${worlds.current ? `, in the world "${worlds.current.name}"` : ''}.`);
+      if (clock) {
+        await clock.refresh().catch(() => null);
+        const time = clock.describe();
+        if (time) lines.push(`Game time: ${time}.`);
+      }
       const pose = await getAgentPose(bridge);
       const frame = await frameNow(pose);
       const here = worlds.current && worlds.current.describeAreasAt(pose.x, pose.y, pose.z);
@@ -345,7 +363,10 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       + 'doesn\'t know yet (the rest comes from the map), so a big scan of a known place is quick. '
       + 'what "entities": mobs, animals, players and dropped items (fast, up to '
       + `${entities.MAX_RADIUS} blocks away): what each one is, where, how far, and which are hostile. They move, so call it `
-      + 'again before acting on one; to attack one, pass its position to attack. what "both" (the default): the two at once.',
+      + 'again before acting on one; to attack one, pass its position to attack. what "both" (the default): the two at once. '
+      + 'The result covers the whole radius you asked for, including a top-down grid of how high the ground is. To see '
+      + 'far down a cliff or up a wall or tree, use survey instead.',
+    longResult: true,
     parameters: {
       type: 'object',
       properties: {
@@ -365,6 +386,30 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
         mode !== 'blocks' && entitiesText(entities.entityRadius(mode === 'entities' ? radius : radius ?? r, mode)),
       ]);
       return [blocks, seen].filter(Boolean).join('\n');
+    },
+  });
+
+  add({
+    name: 'survey',
+    description: 'A view of the land around the robot from above: the height of the highest solid block of every column '
+      + `in a square (up to ${MAX_SURVEY_RADIUS} blocks out, default ${DEFAULT_SURVEY_RADIUS}), however far up or down it is. `
+      + 'Use it where a scan\'s cube doesn\'t reach: at the edge of a cliff (how far down it goes), in front of a wall, '
+      + 'hill or tall tree (how high it goes), or to see the lay of the land before a trip. One quick command per '
+      + 'column (gettopsolidblock): it sees through air, leaves and water, and doesn\'t see caves under the surface.',
+    longResult: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        radius: { type: 'integer', minimum: 1, maximum: MAX_SURVEY_RADIUS, description: `Columns in each direction (default ${DEFAULT_SURVEY_RADIUS}).` },
+      },
+    },
+    async run({ radius }) {
+      const r = clampInt(radius ?? DEFAULT_SURVEY_RADIUS, 1, MAX_SURVEY_RADIUS);
+      const pose = await getAgentPose(bridge);
+      const columns = [];
+      for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) columns.push([pose.x + dx, pose.z + dz]);
+      const found = await surveyColumns(bridge, world, columns, pose.y, { headroom: 24 });
+      return summarizeSurvey(found, await frameNow(pose), r);
     },
   });
 
@@ -664,25 +709,27 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
   add({
     name: 'send_chat',
     description: 'Send a message to the Minecraft chat, seen by every player (keep it short, no markdown). '
-      + 'Use it to tell players something even when the request came from the WebUI.',
+      + 'Use it to tell players something even when the request came from the WebUI, or to talk to another robot (it only '
+      + `hears messages containing its name). Placeholders are filled in as it is sent: ${placeholderHelp()}.`,
     parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
     async run({ message }) {
-      const res = await sayInChat(bridge, settings, String(message || ''));
-      return res.ok ? 'Sent to the game chat.' : `Couldn't send it: ${res.statusMessage}`;
+      const text = await placeholders(String(message || ''));
+      const res = await sayInChat(bridge, settings, text);
+      return res.ok ? `Sent to the game chat: "${text}"` : `Couldn't send it: ${res.statusMessage}`;
     },
   });
 
   add({
     name: 'send_webui',
     description: 'Show a message to the person at the Ptolemy WebUI (highlighted in the Automatic tab), '
-      + 'even when the request came from the game chat.',
+      + `even when the request came from the game chat. Placeholders are filled in as it is sent: ${placeholderHelp()}.`,
     offline: true,
     parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
     async run({ message }) {
-      const text = String(message || '').trim();
+      const text = (await placeholders(String(message || ''))).trim();
       if (!text) throw new Error('empty message');
       notify(text.slice(0, 2000));
-      return 'Shown in the WebUI.';
+      return `Shown in the WebUI: "${text.slice(0, 2000)}"`;
     },
   });
 
@@ -765,7 +812,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
   add({
     name: 'add_thought',
     description: 'Put something on your mind, a passing wish or curiosity ("I want to see the flowers by the river"). '
-      + 'You may act on it later, e.g. while wondering. Only the last few thoughts are kept.',
+      + 'You may act on it later, e.g. while wondering. Thoughts fade with time, and only the last few are kept.',
     offline: true,
     parameters: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] },
     async run({ thought }) {
@@ -904,8 +951,10 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
     parameters: { type: 'object', properties: { seconds: { type: 'number', minimum: 1, maximum: MAX_WAIT_S } }, required: ['seconds'] },
     async run({ seconds }, { signal } = {}) {
       const s = Math.min(MAX_WAIT_S, Math.max(0, Number(seconds) || 1));
+      const started = Date.now();
       await sleep(s * 1000, signal);
-      return `Waited ${s}s.`;
+      const waited = Math.round((Date.now() - started) / 100) / 10;
+      return waited < s - 0.5 ? `Waited ${waited}s of ${s}s: interrupted.` : `Waited ${s}s.`;
     },
   });
 
@@ -1020,7 +1069,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
  * A scan, told the way a model can use it. Cells whose block is '?' are unknown (not identified,
  * or not on the map yet). `intro` replaces the first line, `unknownText(n)` the line counting them.
  */
-function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) => `${n} blocks couldn't be identified.` } = {}) {
+function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) => `${n} blocks couldn't be identified.`, grid = false } = {}) {
   const { x: ax, y: ay, z: az } = scan.agent.position;
   const facing = ((Math.round(scan.agent.yRot / 90) % 4) + 4) % 4;
   const frame = new Frame({ x: ax, y: ay, z: az, facing }, mode);
@@ -1060,17 +1109,34 @@ function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) =
   const air = scan.cells.length - unknown - types.reduce((n, [, cells]) => n + cells.length, 0);
   lines.push(`Counts: Air ${air}, ${types.map(([name, cells]) => `${name} ${cells.length}`).join(', ') || 'nothing else'}.`);
 
-  const rare = types.filter(([, cells]) => cells.length <= COMMON_THRESHOLD);
+  // What counts as common grows with the scan, so a big scan still says where the trees and ores are.
+  const threshold = Math.max(COMMON_THRESHOLD, Math.round(scan.cells.length / 200));
+  const rare = types.filter(([, cells]) => cells.length <= threshold);
   if (rare.length) {
     lines.push('Where the less common blocks are (nearest first):');
-    for (const [name, cells] of rare.reverse()) {
+    for (const [name, cells] of [...rare].reverse()) {
       const nearest = [...cells].sort((a, b) => dist(a) - dist(b)).slice(0, LIST_LIMIT_PER_TYPE);
       lines.push(`  ${name}: ${nearest.map((c) => frame.fmt(c.x, c.y, c.z)).join('; ')}${cells.length > nearest.length ? ` (+${cells.length - nearest.length} more)` : ''}`);
     }
   }
+  const common = types.filter(([, cells]) => cells.length > threshold);
+  if (grid && common.length) {
+    lines.push('The common blocks (the nearest one, and the heights they fill):');
+    for (const [name, cells] of common) {
+      const nearest = cells.reduce((a, c) => (dist(c) < dist(a) ? c : a));
+      const lo = Math.min(...cells.map((c) => c.y));
+      const hi = Math.max(...cells.map((c) => c.y));
+      const span = frame.relative
+        ? (lo === hi ? vertical(lo - ay) : `from ${vertical(lo - ay)} to ${vertical(hi - ay)}`)
+        : (lo === hi ? `y=${lo}` : `y=${lo}..${hi}`);
+      lines.push(`  ${name}: nearest ${frame.fmt(nearest.x, nearest.y, nearest.z)}; ${span}`);
+    }
+  }
 
   // Terrain height: the top solid block of a few columns, so the model can tell hills from flat ground.
-  const b = scan.cells.reduce((acc, c) => ({ minY: Math.min(acc.minY, c.y), maxY: Math.max(acc.maxY, c.y) }), { minY: Infinity, maxY: -Infinity });
+  const b = scan.cells.reduce((acc, c) => ({
+    minY: Math.min(acc.minY, c.y), maxY: Math.max(acc.maxY, c.y), minX: Math.min(acc.minX, c.x), maxX: Math.max(acc.maxX, c.x),
+  }), { minY: Infinity, maxY: -Infinity, minX: Infinity, maxX: -Infinity });
   const tops = [];
   for (const d of ['forward', 'back', 'left', 'right']) {
     const [dx, , dz] = offsetOf(d, facing);
@@ -1090,7 +1156,136 @@ function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) =
     }
   }
   lines.push(`Highest solid block of nearby columns: ${tops.join(', ')}.`);
+  const r = Math.round((b.maxX - b.minX) / 2);
+  if (grid && r >= GRID_MIN_RADIUS) {
+    // The top solid block of every column of the scan (within the scan's own height).
+    const topAt = (x, z) => {
+      for (let y = b.maxY; y >= b.minY; y--) {
+        const block = at.get(`${x},${y},${z}`);
+        if (block === undefined || block === '?') return undefined;
+        if (solidAt(block)) return y;
+      }
+      return null;
+    };
+    lines.push(`Top-down view of the whole scan: ${heightGrid(frame, r, topAt, {
+      what: 'the highest solid block of that column within the scan', none: 'nothing solid in the scan',
+    })}`);
+  }
   if (unknown) lines.push(unknownText(unknown));
+  return lines.join('\n');
+}
+
+/**
+ * A top-down grid of column heights around the robot, `radius` columns out: in the relative frame
+ * forward is up and each number is blocks above (+) or below (-) the robot; in world coordinates
+ * north is up and each number is the world y. `topAt(x, z)` gives the y, null (nothing) or undefined (unseen).
+ */
+function heightGrid(frame, radius, topAt, { what, none }) {
+  const { pose } = frame;
+  const rows = [];
+  let head;
+  if (frame.relative) {
+    const [fx, , fz] = offsetOf('forward', pose.facing);
+    const [rx, , rz] = offsetOf('right', pose.facing);
+    head = `rows go from ${radius} forward (top) to ${radius} back (bottom), columns from ${radius} left to ${radius} right. `
+      + `Each number is ${what}, in blocks above (+) or below (-) you; @ is you, ? not seen, . ${none}.`;
+    for (let f = radius; f >= -radius; f--) {
+      const row = [];
+      for (let r = -radius; r <= radius; r++) {
+        const y = f || r ? topAt(pose.x + fx * f + rx * r, pose.z + fz * f + rz * r) : '@';
+        row.push(y === '@' ? '@' : y === undefined ? '?' : y === null ? '.' : signed(y - pose.y));
+      }
+      rows.push(row.map((v) => v.padStart(4)).join(''));
+    }
+  } else {
+    head = `rows go from z=${pose.z - radius} (north, top) to z=${pose.z + radius} (south), columns from x=${pose.x - radius} `
+      + `(west) to x=${pose.x + radius} (east). Each number is the world y of ${what}; @ is the robot (at y=${pose.y}), `
+      + `? not seen, . ${none}.`;
+    for (let z = pose.z - radius; z <= pose.z + radius; z++) {
+      const row = [];
+      for (let x = pose.x - radius; x <= pose.x + radius; x++) {
+        const y = x === pose.x && z === pose.z ? '@' : topAt(x, z);
+        row.push(y === '@' ? '@' : y === undefined ? '?' : y === null ? '.' : String(y));
+      }
+      rows.push(row.map((v) => v.padStart(4)).join(''));
+    }
+  }
+  return `${head}\n${rows.join('\n')}`;
+}
+
+function signed(n) {
+  return n > 0 ? `+${n}` : String(n);
+}
+
+/**
+ * What the survey tool found: gettopsolidblock on every column of a square around the robot
+ * ({ tops, ground, unloaded, commands } from surveyColumns), told the way a model can use it.
+ */
+function summarizeSurvey(found, frame, radius) {
+  const { pose } = frame;
+  const key = (x, z) => `${x},${z}`;
+  const topAt = (x, z) => {
+    const t = found.tops.get(key(x, z));
+    return t ? t.y : undefined;
+  };
+  const vertical = (dy) => (dy === 0 ? 'level with you' : `${Math.abs(dy)} ${dy > 0 ? 'up' : 'down'}`);
+  const height = (y) => (frame.relative ? vertical(y - pose.y) : `y=${y}`);
+  const size = 2 * radius + 1;
+  const lines = [`Surveyed the surface around you with gettopsolidblock: ${size}x${size} columns, ${found.commands} commands`
+    + `${found.unloaded ? ` (${found.unloaded} in chunks that aren't loaded: ?)` : ''}. It sees through air, leaves and water, `
+    + 'not into caves. You are at ' + `${Frame.world(pose.x, pose.y, pose.z)}, facing ${compassName(pose.facing)}.`];
+  lines.push(`Top-down view: ${heightGrid(frame, radius, topAt, { what: 'the highest solid block of that column', none: 'nothing' })}`);
+
+  const own = found.tops.get(key(pose.x, pose.z));
+  if (own && own.y > pose.y) {
+    lines.push(`Above you: ${own.name}, ${height(own.y)}. You are under a roof, an overhang or underground, so the heights `
+      + 'around you may be the top of what is above you, not the floor you are on.');
+  } else if (own) {
+    const g = found.ground.get(key(pose.x, pose.z));
+    lines.push(`Ground under you: ${own.name}, ${height(own.y)} (${pose.y - (g ?? own.y) - 1} blocks of air between it and you).`);
+  }
+
+  // Straight lines out from the robot: how the land rises and falls, and where it does so suddenly.
+  const steps = [];
+  for (const d of ['forward', 'back', 'left', 'right']) {
+    const [dx, , dz] = offsetOf(d, pose.facing);
+    const heights = [];
+    let prev = found.ground.get(key(pose.x, pose.z)) ?? topAt(pose.x, pose.z);
+    for (let k = 1; k <= radius; k++) {
+      const x = pose.x + dx * k;
+      const z = pose.z + dz * k;
+      const y = topAt(x, z);
+      heights.push(y === undefined ? '?' : frame.relative ? signed(y - pose.y) : String(y));
+      // Tree trunks stick up out of the ground: they're listed as trees, not as cliffs.
+      const trunk = y !== undefined && TRUNK.test(found.tops.get(key(x, z)).name);
+      if (!trunk && y !== undefined && prev !== undefined && prev !== null && Math.abs(y - prev) >= 3) {
+        steps.push(`${d}, ${k} out: ${y > prev ? `rises ${y - prev} blocks (a wall or a cliff face)` : `drops ${prev - y} blocks (a cliff edge or a pit)`}, `
+          + `${found.tops.get(key(x, z)).name} ${frame.relative ? height(y) : `at ${frame.fmt(x, y, z)}`}`);
+      }
+      if (y !== undefined && !trunk) prev = y;
+    }
+    lines.push(`  ${d}: ${heights.join(' ')}`);
+  }
+  lines.splice(lines.length - 4, 0, `Straight out from you, column by column (${frame.relative ? 'blocks above or below you' : 'world y'}):`);
+  if (steps.length) lines.push(`Sudden changes:\n${steps.map((l) => `- ${l}`).join('\n')}`);
+
+  let hi = null;
+  let lo = null;
+  const trees = [];
+  for (const [k, t] of found.tops) {
+    const [x, z] = k.split(',').map(Number);
+    if (TRUNK.test(t.name)) trees.push({ ...t, x, z });
+    if (!hi || t.y > hi.y) hi = { ...t, x, z };
+    if (!lo || t.y < lo.y) lo = { ...t, x, z };
+  }
+  const at = (p) => `${p.name} at ${frame.fmt(p.x, p.y, p.z)}${frame.relative ? '' : ` (${height(p.y)})`}`;
+  if (hi) lines.push(`Highest: ${at(hi)}. Lowest: ${at(lo)}.`);
+  if (trees.length) {
+    const d = (p) => Math.abs(p.x - pose.x) + Math.abs(p.z - pose.z);
+    const near = trees.sort((a, b) => d(a) - d(b)).slice(0, LIST_LIMIT_PER_TYPE);
+    lines.push(`Tree trunks (top of the trunk; leaves aren't seen): ${near.map(at).join('; ')}`
+      + `${trees.length > near.length ? ` (+${trees.length - near.length} more)` : ''}.`);
+  }
   return lines.join('\n');
 }
 
@@ -1098,7 +1293,7 @@ function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) =
  * What the map says about the cube of `radius` around the robot, summarized like a scan (Vision
  * keeps the map fresh close to the robot). Used for the model's awareness.
  */
-function mapSummary(world, pose, radius, mode = 'world', intro = null) {
+function mapSummary(world, pose, radius, mode = 'world', intro = null, { grid = false } = {}) {
   const cells = [];
   let known = 0;
   for (let dy = -radius; dy <= radius; dy++) {
@@ -1120,6 +1315,7 @@ function mapSummary(world, pose, radius, mode = 'world', intro = null) {
     mode, {
       intro: intro || `Around you, from your map (Awareness radius ${radius}: ${known} of ${cells.length} blocks known):`,
       unknownText: (n) => `${n} blocks around you haven't been seen yet (scan to see them).`,
+      grid,
     });
 }
 
@@ -1157,12 +1353,19 @@ function sayInChat(bridge, settings, text) {
   return bridge.sendCommand(`tellraw @a ${json}`, { quiet: true });
 }
 
-/** Is this chat message one of the robot's own lines echoing back? */
+/** Is this chat message one of this robot's own lines echoing back? (Other robots' lines look the same.) */
 function isOwnChat(message) {
-  const text = String(message || '');
-  if (/^§b</.test(text)) return true;
-  const plain = text.replace(/§./g, '');
-  return recentlySaid.some((r) => Date.now() - r.time < 30000 && plain.includes(r.text));
+  const plain = String(message || '').replace(/§./g, '');
+  return recentlySaid.some((r) => Date.now() - r.time < 30000 && r.text && plain.includes(r.text));
 }
 
-module.exports = { createToolbox, sayInChat, isOwnChat, summarizeScan, mapSummary };
+/**
+ * A robot's chat line, the way sayInChat writes them ("§b<Name>§r text"), from this robot or any
+ * other player's Ptolemy: { name, text }, or null for anything else.
+ */
+function robotLine(message) {
+  const m = /^§b<([^>§]{1,40})>§r\s?([\s\S]*)$/.exec(String(message || ''));
+  return m ? { name: m[1].trim(), text: m[2].replace(/§./g, '').trim() } : null;
+}
+
+module.exports = { createToolbox, sayInChat, isOwnChat, robotLine, summarizeScan, summarizeSurvey, mapSummary, heightGrid };

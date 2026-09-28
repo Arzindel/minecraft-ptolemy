@@ -434,6 +434,7 @@ code, pre, input { font-family: var(--mono); }
 /* --- Automatic ---------------------------------------------------------- */
 
 .pilot {
+  position: relative;
   flex: 1;
   min-height: 360px;
   display: flex;
@@ -675,6 +676,35 @@ code, pre, input { font-family: var(--mono); }
 .pilot-log .pilot-notice .pilot-text { background: rgba(127, 178, 229, 0.12); border-left: 3px solid var(--chat); padding: 4px 8px; border-radius: 4px; }
 .pilot-log .pilot-notice .pilot-who { color: var(--chat); }
 .pilot-log .pilot-wonder .pilot-who, .pilot-log .pilot-wonder .pilot-text { color: #c89be0; font-weight: 400; font-style: italic; }
+.pilot-log .pilot-robot .pilot-who { color: #e0a86b; }
+
+/* No agent in this world yet: a modal over the Automatic panel. */
+.pilot-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(17, 19, 21, 0.82);
+  backdrop-filter: blur(2px);
+}
+.pilot-modal {
+  max-width: 380px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+.pilot-modal p { margin: 0; }
+.pilot-modal .btn { font-size: 15px; padding: 8px 18px; }
 
 /* --- Dashboard ------------------------------------------------------------- */
 

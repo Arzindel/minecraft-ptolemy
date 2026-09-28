@@ -4,7 +4,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 
-const LIMITS = { areas: 60, todos: 30, thoughts: 10, notes: 60, journal: 50 };
+const LIMITS = { areas: 60, todos: 30, thoughts: 100, notes: 60, journal: 50 };
 const TODO_STATES = ['pending', 'in_progress', 'done'];
 const SAVE_DELAY_MS = 300;
 
@@ -36,6 +36,8 @@ class WorldMemory extends EventEmitter {
       nextId: data.nextId || 1,
     };
     this._timer = null;
+    // How long thoughts last and how many are kept ({ ttl: seconds, max }, 0 = no limit); set by the WorldManager.
+    this.thoughtRules = () => ({ ttl: 0, max: 10 });
   }
 
   static load(dir, fallback) {
@@ -151,13 +153,32 @@ class WorldMemory extends EventEmitter {
     this._changed();
   }
 
-  /** A new thought; the oldest one fades when there are too many. */
+  /** A new thought, on top of the others (newest last); the oldest ones fade when there are too many. */
   addThought(text) {
     const clean = String(text || '').trim().slice(0, 200);
     if (!clean) throw new Error('a thought needs text');
     this.data.thoughts.push({ id: this._id('h'), text: clean, time: Date.now() });
     this.data.thoughts = this.data.thoughts.slice(-LIMITS.thoughts);
+    this.pruneThoughts({ quiet: true });
     this._changed();
+  }
+
+  /** Forget every thought at once. */
+  clearThoughts() {
+    if (!this.data.thoughts.length) return;
+    this.data.thoughts = [];
+    this._changed();
+  }
+
+  /** Drop thoughts older than the ttl, then the oldest beyond the max. Returns how many went. */
+  pruneThoughts({ quiet = false } = {}) {
+    const { ttl, max } = this.thoughtRules();
+    const before = this.data.thoughts.length;
+    if (ttl > 0) this.data.thoughts = this.data.thoughts.filter((t) => Date.now() - (t.time || 0) < ttl * 1000);
+    if (max > 0 && this.data.thoughts.length > max) this.data.thoughts = this.data.thoughts.slice(-max);
+    const gone = before - this.data.thoughts.length;
+    if (gone && !quiet) this._changed();
+    return gone;
   }
 
   addNote(text) {
@@ -251,7 +272,7 @@ class WorldMemory extends EventEmitter {
       ? `Todo list:\n${d.todos.map((t) => `- [${t.status}] ${t.text}`).join('\n')}`
       : 'Todo list: empty.');
     lines.push(d.thoughts.length
-      ? `On your mind:\n${d.thoughts.map((t) => `- ${t.text} (${ago(t.time)})`).join('\n')}`
+      ? `On your mind (newest first):\n${[...d.thoughts].reverse().map((t) => `- ${t.text} (${ago(t.time)})`).join('\n')}`
       : 'On your mind: nothing in particular.');
     lines.push(d.notes.length
       ? `Long-term memory (numbered; remember with replace to change one, forget to drop one):\n${d.notes.map((n, i) => `${i + 1}. ${n.text}`).join('\n')}`

@@ -9,7 +9,7 @@
   const send = (m) => window.ptolemy.send(m);
   const op = (name, fields = {}) => send({ type: 'memory', op: name, ...fields });
 
-  const data = { world: null, status: null, positions: null, pilot: null, wonder: null, endpoints: null };
+  const data = { world: null, status: null, positions: null, pilot: null, wonder: null, endpoints: null, clock: null, settings: null };
 
   function el(tag, props = {}, ...children) {
     const node = Object.assign(document.createElement(tag), props);
@@ -49,6 +49,14 @@
     if (s < 3600) return `${Math.round(s / 60)} min ago`;
     if (s < 86400) return `${Math.round(s / 3600)} h ago`;
     return `${Math.round(s / 86400)} d ago`;
+  }
+
+  function until(time) {
+    const s = Math.max(0, Math.round((time - Date.now()) / 1000));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.round(s / 60)} min`;
+    if (s < 86400) return `${Math.round(s / 3600)} h`;
+    return `${Math.round(s / 86400)} d`;
   }
 
   function removeButton(title, fn) {
@@ -179,10 +187,21 @@
       fact(pl.host ? `${pl.name} (you)` : pl.name, `${pl.x} ${pl.y} ${pl.z}${pl.areas ? ` · in ${pl.areas}` : ''}`);
     }
 
+    const c = data.clock;
+    if (c) {
+      // Worked out from the last reading, like the server does, so it ticks along between readings.
+      const t = Math.floor(c.daytime + (c.running ? ((Date.now() - c.receivedAt) / 1000) * 20 : 0)) % 24000;
+      const minutes = Math.floor((((t + 6000) % 24000) * 1440) / 24000);
+      const hhmm = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+      fact('Game time', `${hhmm}${c.day !== null && c.day !== undefined ? ` · day ${c.day}` : ''}${c.running ? '' : ' · stopped'}`
+        + `${c.weather ? ` · ${c.weather}` : ''}`);
+    }
+
     const pilot = data.pilot;
     if (pilot) {
       const doing = !pilot.running ? 'idle'
-        : `${pilot.source === 'wonder' ? 'wondering' : pilot.source === 'chat' ? 'on a chat request' : 'on a request'} · ${pilot.phase}${pilot.phase === 'tool' ? ` ${pilot.detail}` : ''}`;
+        : `${pilot.source === 'wonder' ? 'wondering' : pilot.source === 'chat' ? 'on a chat request'
+          : pilot.source === 'robot' ? 'talking to a robot' : 'on a request'} · ${pilot.phase}${pilot.phase === 'tool' ? ` ${pilot.detail}` : ''}`;
       fact('Doing', doing);
     }
     if (data.wonder) {
@@ -230,9 +249,11 @@
     }
     if (!w.todos.length) todoList.append(el('li', { className: 'muted', textContent: 'Nothing to do. The LLM writes its plans here too.' }));
 
+    const ttl = data.settings ? data.settings['thoughts.ttl'] : 0;
     for (const t of [...w.thoughts].reverse()) {
+      const fades = ttl > 0 ? ` · fades in ${until(t.time + ttl * 1000)}` : '';
       list(thoughtList, el('li', {}, el('span', { className: 'grow thought', textContent: `“${t.text}”` }),
-        el('span', { className: 'muted small', textContent: ago(t.time) }), removeButton('Let go', () => op('thoughtRemove', { id: t.id }))));
+        el('span', { className: 'muted small', textContent: `${ago(t.time)}${fades}` }), removeButton('Let go', () => op('thoughtRemove', { id: t.id }))));
     }
     if (!w.thoughts.length) thoughtList.append(el('li', { className: 'muted', textContent: 'A clear mind.' }));
 
@@ -263,7 +284,7 @@
 
     const journal = el('ul', { className: 'dash-list journal' });
     for (const j of [...w.journal].reverse().slice(0, 15)) {
-      const src = { ui: 'WebUI', chat: 'chat', wonder: 'wondering' }[j.source] || j.source;
+      const src = { ui: 'WebUI', chat: 'chat', robot: 'a robot', wonder: 'wondering' }[j.source] || j.source;
       journal.append(el('li', {}, el('span', { className: 'muted small nowrap', textContent: `${ago(j.time)} · ${src}` }),
         el('span', { className: 'grow' }, j.request ? el('strong', { textContent: `${j.request} ` }) : null, j.result)));
     }
@@ -293,8 +314,16 @@
       renderNow();
     }
   });
+  on('clock', (c) => { data.clock = c.now ? { ...c.now, receivedAt: Date.now() } : null; renderNow(); });
+  on('settings', (s) => {
+    const ttl = data.settings && data.settings['thoughts.ttl'];
+    data.settings = s.values;
+    if (ttl !== s.values['thoughts.ttl']) renderMemory();
+  });
   on('memoryError', (e) => window.alert(e.message));
-  setInterval(() => { if (data.wonder && data.wonder.nextAt) renderNow(); }, 1000);
+  setInterval(() => { if ((data.wonder && data.wonder.nextAt) || (data.clock && data.clock.running)) renderNow(); }, 1000);
+  setInterval(() => { if (data.settings && data.settings['thoughts.ttl'] > 0) renderMemory(); }, 30000); // "fades in ..."
+
 
   renderMemory();
 
