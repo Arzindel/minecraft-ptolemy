@@ -20,9 +20,10 @@ const UNMARKED_ID = 'unmarked';
  * 'status' (detection / agent state changed).
  */
 class WorldManager extends EventEmitter {
-  constructor({ bridge, log }) {
+  /** @param {{ bridge, log, thoughtRules?: () => { ttl: number, max: number } }} deps */
+  constructor({ bridge, log, thoughtRules = null }) {
     super();
-    Object.assign(this, { bridge, log });
+    Object.assign(this, { bridge, log, thoughtRules });
     this.current = null; // WorldMemory
     this.detection = { state: 'waiting', message: 'Waiting for Minecraft to connect.' };
     this.agent = { exists: null }; // null = unknown
@@ -93,10 +94,15 @@ class WorldManager extends EventEmitter {
     return m ? m[1].toLowerCase() : null;
   }
 
-  /** Does this world have an agent yet? */
+  /**
+   * Does the connected player have an agent in this world yet? `agent ...` commands only ever reach
+   * the agent of the player whose game runs them, so another player's agent never counts.
+   */
   async checkAgent() {
     if (!this.bridge.connected) return;
     const res = await this.bridge.sendCommand('agent getposition', { quiet: true });
+    // A timeout or a dropped connection (no reply from the game at all) says nothing either way.
+    if (!res.ok && !res.body) return;
     this.agent = { exists: Boolean(res.ok && res.body && res.body.position), message: res.ok ? '' : res.statusMessage };
     this.emit('status');
   }
@@ -150,6 +156,8 @@ class WorldManager extends EventEmitter {
       this.current.removeAllListeners('change');
     }
     const memory = WorldMemory.load(path.join(WORLDS_DIR, id), { id, ...fallback });
+    if (this.thoughtRules) memory.thoughtRules = this.thoughtRules;
+    memory.pruneThoughts();
     memory.touch();
     memory.on('change', () => this.emit('memory', memory));
     this.current = memory;

@@ -61,7 +61,9 @@ async function surveySurface(bridge, world, from, to, { width = 3, endRadius = 3
 
 /**
  * Measure the ground of these columns ([x, z]) with gettopsolidblock, asking from `headroom` above
- * `aboveY`, and put it on the map. Resolves to { columns, unloaded, commands, ground }.
+ * `aboveY`, and put it on the map. Resolves to { columns, unloaded, commands, ground, tops }: `ground`
+ * maps "x,z" to the y of the ground (under a branch, if the top was one), `tops` to the first solid
+ * block found from above, { y, name } (a tree trunk's top, the top of a wall).
  */
 async function surveyColumns(bridge, world, columns, aboveY, { headroom = 24 } = {}) {
   const send = (cmd) => bridge.sendCommand(cmd, { quiet: true });
@@ -88,6 +90,7 @@ async function surveyColumns(bridge, world, columns, aboveY, { headroom = 24 } =
   const blocks = [];
   const clear = [];
   const ground = new Map();
+  const tops = new Map();
   let unloaded = 0;
   for (const { c, found } of answers) {
     if (!found) {
@@ -95,6 +98,7 @@ async function surveyColumns(bridge, world, columns, aboveY, { headroom = 24 } =
       continue;
     }
     blocks.push([c.x, found.y, c.z, displayName(found.id)]);
+    tops.set(`${c.x},${c.z}`, { y: found.y, name: displayName(found.id) });
     for (let y = found.y + 1; y < Math.min(c.from, found.y + 1 + headroom); y++) clear.push([c.x, y, c.z]);
     let groundY = found.y;
     const below = under.get(`${c.x},${c.z}`);
@@ -108,7 +112,7 @@ async function surveyColumns(bridge, world, columns, aboveY, { headroom = 24 } =
   }
   world.setBlocks(blocks);
   world.setClear(clear);
-  return { columns: columns.length, unloaded, commands, ground };
+  return { columns: columns.length, unloaded, commands, ground, tops };
 }
 
 /**

@@ -1,6 +1,6 @@
 'use strict';
 
-// Nanny Cam: a WebGL2 view of the robot's map around it (everything it has seen, up to 30 blocks
+// Nanny Cam: a WebGL2 view of the robot's map around it (everything it has seen, up to 100 blocks
 // away), kept live by Vision. Every block is the same unit cube drawn with instancing (one draw
 // call per pass), so tens of thousands of blocks are cheap on any GPU. The filter buttons keep
 // the whole map on screen but grey out what's outside the robot's Awareness or its last Vision look.
@@ -389,7 +389,7 @@
 
     const { eye, target } = eyePosition();
     viewProj = mat4.multiply(
-      mat4.perspective(Math.PI / 4, width / height, 0.1, 1000),
+      mat4.perspective(Math.PI / 4, width / height, 0.1, 2000),
       mat4.lookAt(eye, target, [0, 1, 0]),
     );
 
@@ -451,7 +451,7 @@
   canvas.addEventListener('pointerleave', () => { tooltip.hidden = true; });
   canvas.addEventListener('wheel', (ev) => {
     ev.preventDefault();
-    camera.distance = Math.max(3, Math.min(150, camera.distance * Math.exp(ev.deltaY * 0.001)));
+    camera.distance = Math.max(3, Math.min(400, camera.distance * Math.exp(ev.deltaY * 0.001)));
     requestDraw();
   }, { passive: false });
   canvas.addEventListener('dblclick', () => {
@@ -475,7 +475,7 @@
     const tDelta = dir.map((d) => Math.abs(1 / d));
     const tMax = dir.map((d, i) => (d > 0 ? cell[i] + 1 - origin[i] : origin[i] - cell[i]) * tDelta[i]);
 
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 2000; i++) {
       const key = cell.join(',');
       if (entityCells.has(key) || visible.has(key)) {
         tooltip.textContent = entityCells.get(key) || `${visible.get(key)}  ${cell.join(' ')}`;

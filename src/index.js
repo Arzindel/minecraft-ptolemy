@@ -2,6 +2,7 @@
 
 require('./env').loadEnv();
 
+const { spawn } = require('child_process');
 const { MinecraftBridge } = require('./minecraft/bridge');
 const { WebServer } = require('./web/server');
 
@@ -10,6 +11,22 @@ const MC_PORT = Number(process.env.PTOLEMY_MC_PORT) || 8080;
 // If the ports are taken (say, another Ptolemy is running), both move up together: the second
 // instance gets 3001 + 8081, the third 3002 + 8082, and so on.
 const PORT_ATTEMPTS = 20;
+// With --open (the start scripts pass it), the WebUI opens in the browser, unless a page connects on
+// its own within this long: an open page reconnects by itself after a restart (e.g. after a git pull).
+const OPEN_BROWSER_AFTER_MS = 3000;
+
+/** Open a URL in the default browser. Failing to is not worth stopping for. */
+function openBrowser(url) {
+  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => console.log(`  (Couldn't open the browser: go to ${url})`));
+    child.unref();
+  } catch {
+    console.log(`  (Couldn't open the browser: go to ${url})`);
+  }
+}
 
 /** Listen on UI_PORT + n and MC_PORT + n for the first n where both are free. */
 async function listenOnFreePorts(bridge, web) {
@@ -63,6 +80,12 @@ async function main() {
     console.log('  Minecraft is disconnected by a restart, so run /connect again afterwards.');
   }
   console.log('');
+
+  if (process.argv.includes('--open')) {
+    setTimeout(() => {
+      if (!web.wss.clients.size) openBrowser(`http://localhost:${web.port}`);
+    }, OPEN_BROWSER_AFTER_MS);
+  }
 
   const shutdown = () => {
     console.log('\nShutting down...');

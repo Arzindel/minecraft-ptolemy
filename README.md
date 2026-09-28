@@ -57,6 +57,20 @@ The LLM reasons over the stored map, and the game is only asked about what might
 
 ## Quick start
 
+**The easy way:** double-click **`start.bat`** (Windows), or run **`./start.sh`** (macOS, Linux). It:
+
+1. uses Node.js if you have it (18.11 or newer); otherwise it downloads a private copy into `.node/` in this
+   folder (checked against nodejs.org's checksums; nothing is installed on the system, delete the folder to
+   remove it),
+2. installs Ptolemy's packages the first time, and again whenever `package.json` changes,
+3. starts Ptolemy (in watch mode, like `npm run start`) and opens the WebUI in your browser.
+
+The launcher itself needs nothing extra: on Windows 10/11, PowerShell (built in) does the download; on
+macOS/Linux, `curl` and `tar`. The first run needs an internet connection. Close the window (or Ctrl+C)
+to stop Ptolemy.
+
+**By hand:**
+
 ```bash
 npm install
 npm run start
@@ -101,6 +115,14 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#subscribe <Event> [Event...]` | Subscribe to game events, e.g. `#subscribe BlockBroken ItemUsed`. Events are logged as ⚡ lines. |
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
 | `#scan [radius] [blocks\|entities\|both]` | Look around the agent. `blocks`: identify every block in a cube reaching `radius` blocks out from the agent in every direction (2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom; without a radius, the default from the Configuration tab (4). `entities`: the mobs, animals, players and dropped items within `radius` blocks (default 16, up to 48), with every raw command reply in the log entry's details. `both` (the default): the two at once, entities at least 16 blocks out. See [Scanning](#scanning) and [Seeing entities](#seeing-entities) |
+| `#survey [radius]` | A view of the land from above: `gettopsolidblock` on every column around the agent (default 8 blocks out = 17×17 columns, up to 24), printed as a grid of heights with cliffs, walls and trees called out. It sees how far down a cliff goes or how high a wall or tree is, which a `#scan` cube misses. Same as the LLM's `survey` tool |
+| `#safe_destroy <block> <direction>` | Break the block touching the agent in that direction only if it is that block (e.g. `#safe_destroy oak_log forward`). Directions are always from the agent: `up` is the cell above it, `down` the one under it |
+| `#replace <slot> <direction>` | Break the block there (if any), then place one from the inventory slot. If the slot is empty it only breaks |
+| `#safe_replace <block> <slot> <direction>` | `#replace`, only if the block there is that block |
+| `#hold <slot 1-26> <item> [variant]` | Keep an inventory slot stocked with an item, and tell the LLM. See [Inventory](#inventory) |
+| `#release <slot 1-26>` | Stop keeping a slot stocked |
+| `#drop_inv <slot> [amount] [direction]` | Drop items from a slot (default 1, forward) |
+| `#give_item <item> [amount] [variant]` | Make items in scratch slot 27 and drop them, towards you if you're near the agent |
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
@@ -368,6 +390,11 @@ world − robot. The other facings are that, rotated (`src/agent/frame.js`).
   alone always goes to the owner.
 - **The Dashboard lists every player's position.**
 - **In the console:** `#pathfindwalk @p Bob` walks to Bob.
+- **Each Ptolemy only drives its own agent.** Every command runs as the player whose game is connected
+  (`getlocalplayername`), and `agent ...` commands (`agent getposition`, `agent move`, `agent create`...)
+  only ever act on that player's own agent. If Diego runs his own Ptolemy, his `Diego.Agent` answers to
+  his, yours to yours. The one place other agents show up is entity scans, where they're just entities.
+- **Who may call the robot from the chat** is up to you: see [From the in-game chat](#from-the-in-game-chat).
 
 ### Exact or near: where go_to stops
 
@@ -478,7 +505,21 @@ rolling timer.
 A request always interrupts a wander in progress. Wondering waits while Minecraft is disconnected or
 the world has no agent. The interval, the step limit per wander (6) and the prompt itself are in the
 **Chat & wondering** card on the Robot tab. The robot can also switch wondering itself when asked in
-chat ("go do your own thing", "stop wandering around").
+chat ("go do your own thing", "stop wandering around"). The prompt tells it that, now and then, it may
+say something in the chat to a player or to another robot nearby.
+
+**On its mind** (same card): thoughts fade after `thoughts.ttl` seconds (30 minutes by default) and only
+the newest `thoughts.max` (10) are kept; 0 turns either off. Right before each wander, its mind may wander
+too, each on its own chance (1% by default):
+
+- **Forget** wipes every thought and leaves one: "I forgot what I was thinking about" (editable).
+- **ADHD** puts a random shower thought from a list (one per line, editable) on top of its mind. With
+  "ask the model for a new one first" on, the model is first asked, without the conversation or tools,
+  for `{"shower_thought": "..."}` with a prompt you can edit; the new thought joins the list, then one is
+  picked at random.
+- **Both at once:** the mind is wiped, and the shower thought takes the place of the forget text.
+
+What happened shows up in the Automatic transcript.
 
 ### The tools
 
@@ -488,17 +529,23 @@ report what really happened, because the game says "success" even when the robot
 | Tool | What it does |
 | --- | --- |
 | `get_status` | Robot position and facing, which compass direction each relative direction is, the six blocks around it, the player's position and distance |
-| `scan` | `what: "blocks"`: look at a cube around the robot (fresh up to radius 4, then only what the map doesn't know; see [The map and Vision](#the-map-and-vision)) and summarize it: neighbours, the ground below, counts per block type, where the rarer blocks are, and ground height around. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
+| `scan` | `what: "blocks"`: look at a cube around the robot (fresh up to radius 4, then only what the map doesn't know; see [The map and Vision](#the-map-and-vision)) and summarize the whole cube, however big the radius asked for: neighbours, the ground below, counts per block type, where the rarer blocks are, the nearest of each common one and the heights it fills, and a top-down grid of the highest solid block of every column. Scan results get their own character limit (`llm.scanResultChars`, 12000), so a big scan isn't cut to the size of other tool results. `what: "entities"`: mobs, animals, players and dropped items around the robot (default 16 blocks, up to 48), nearest first: name, position, distance, and which are hostile. `what: "both"` (the default): the two. See [Seeing entities](#seeing-entities) |
+| `survey` | A view of the land from above: `gettopsolidblock` on every column of a square around the robot (default 8 out, up to 24), as a grid of heights, the four straight lines out from the robot, sudden rises and drops (cliff edges, walls), the highest and lowest points and tree trunks. For what a scan's cube misses: how far down a cliff goes, how high a wall or tree is |
 | `get_blocks` | The block at up to 64 positions, relative or world |
 | `move` | Move 1–64 blocks forward/back/left/right/up/down, checking every step; reports what blocked it and which `destroy` direction would clear it |
 | `turn` | Turn left, right or around, or face north/south/east/west |
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
 | `teleport_to_player` | `agent tp`, only when the request asks for a teleport (asking to fly isn't enough) |
-| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
+| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions as seen from the robot (forward, back, left, right, up = the cell above it, down = the cell under it). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. When nothing changed, the call fails (✗ in the transcript) and says why: nothing to break, a block that won't break, the cell isn't empty, a player, mob or robot standing in the way (looked up with `testfor` over the cell), or else probably an empty slot. `place` takes an inventory slot and only fills an empty cell |
+| (own cell) | The robot takes up one cell, can never act on it and never moves into a solid block: it always works on a cell next to it. Asked to `place` / `replace` into the cell it's standing in, it steps out first (up if free, then placing down; otherwise to a free side, placing back towards it). `destroy` on its own cell is refused with that explanation |
+| `safe_destroy` | `destroy`, only if the block is the one named (`oak_log`): compared by name, then with `testforblock`. The model is told to prefer it (and `safe_replace`) whenever it knows what's there, and to use the plain versions only when it can't know or any block will do |
+| `replace`, `safe_replace` | Break whatever is in the cell, then place from a slot: it always ends with the new block, unless the slot is empty (it only breaks) or the old block can't be broken. `safe_replace` only if the block there is the one named |
+| `hold`, `release` | Keep an inventory slot (1-26) stocked with an item, or stop. See [Inventory](#inventory) |
+| `give_item` | Any item, any amount (1-64): made in scratch slot 27 and dropped towards the player who asked (if within 6 blocks, else forward) |
 | `locate` | One position, given relative or world, in both forms, plus the block there and its area |
-| `collect`, `drop` | Pick up items nearby, or drop items from a slot |
-| `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked |
-| `send_webui` | A highlighted message in the Automatic tab, whoever asked |
+| `collect`, `drop` | Pick up items nearby, or drop items from a slot (default 1, forward) |
+| `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked, to players or other robots. [Placeholders](#time-weather-and-placeholders) are filled in as it's sent |
+| `send_webui` | A highlighted message in the Automatic tab, whoever asked. Placeholders are filled in too |
 | `get_memory` | This world's memory (the LLM also gets it in its prompt) |
 | `add_area`, `remove_area` | Name a box ("house", "kitchen"), or forget one |
 | `todo_write` | Replace the todo list, with each item pending / in progress / done |
@@ -511,6 +558,24 @@ report what really happened, because the game says "success" even when the robot
 | `run_command` | A Minecraft command, with the game's raw reply: the escape hatch for everything else. Never one that acts on players |
 
 `run_command` and `destroy`/`attack` can be turned off under **Tools and MCP**.
+
+### Inventory
+
+The agent has 27 inventory slots (three rows of nine in the game). Nothing can read them, but
+`agent setitem <slot> <item> <count> <variant>` writes them (`agent setitem 1 wood 8 1` puts 8 spruce wood
+in slot 1). So instead of knowing what's in a slot, Ptolemy makes sure of it:
+
+- **Holding** a slot (1-26) refills it with its item every second (`inventory.refreshSeconds`, 64 items by
+  default: `inventory.amount`), so it never runs out. The model's memory lists the held slots, without
+  the amount, which stands for "unlimited". Held slots are kept per world.
+- **Releasing** only stops tracking a slot. A slot can't be emptied (a count of 0 gives 1), so what's left in
+  it simply becomes unknown, and the model is told so.
+- **Slot 27 is scratch space:** `give_item` puts the items there and drops them straight away.
+- Hold and release from the Dashboard's **Inventory** card (click a slot, type an item id and an optional
+  variant, **Hold**), with `#hold` / `#release`, or by asking the robot ("hold oak planks in slot 1").
+
+The model is taught to hold a block before building with it, to use `replace` when a cell isn't empty, and
+that direction `down` is the cell under the robot, not "put it down".
 
 ### Seeing entities
 
@@ -542,6 +607,29 @@ says Ptolemy, so you can talk about the robot without calling it. `Ptolemy, stop
 that arrive while it's busy wait their turn. The robot's own chat lines never trigger it. Both words,
 and whether it listens and answers at all, are in the **Chat & wondering** card on the Robot tab.
 
+**Who can call it** (all in the **Chat & wondering** card):
+
+- **Only my player can call it** (off by default): only the player at this Ptolemy (the name the game
+  reports with `getlocalplayername`) can give requests. Off: every player can.
+- **Interrupting:** a player calling the robot in the chat always interrupts its wondering. With **Players
+  can always interrupt** on (the default), it also drops a request it's working on to answer the new one.
+  Off: new requests wait their turn, unless they contain an **interrupt word** (`hey hey, wait, stop` by
+  default, comma-separated). `Ptolemy, stop` on its own still just stops. Requests from the **WebUI never
+  interrupt**, not even wondering: they wait their turn, and the Stop button is there to cut in.
+- **Distracted:** a chat message calling the robot (from a player or another robot) is missed now and then
+  (**Distracted: chance to miss a message**, 1% by default). It shows in the transcript, crossed out, but the
+  model never sees it and nothing is interrupted. Messages containing an exception mark (**Distracted: never
+  miss messages with**, `!` by default, comma-separated) are never missed, and neither are a bare
+  `Ptolemy, stop` or anything from the WebUI.
+- **Listen to other robots** (on): another player's Ptolemy robot can talk to this one by saying its name.
+  Robot lines are recognised by their `<Name>` tellraw format; the robot's own lines are recognised by what
+  it just said. Robots can't stop the robot, can't allow flying or teleporting, and never interrupt a
+  person's request; **Robots can interrupt wondering** (on) decides whether they interrupt a wander. Both
+  robots are told that the other only hears messages containing its name, and to end a conversation by
+  not saying it (no answering goodbyes), so two robots can chat without looping forever. Give the robots
+  different names: a line signed with the robot's own name is always taken as its own (so it never
+  answers itself), and Ptolemy warns in the console when it sees one it didn't write.
+
 **It can be renamed from the chat:** "Ptolemy, your name is now Boris" makes it call `set_name`. From
 then on "Boris" calls it, and its chat messages are signed `<Boris>`. The ignore word can be changed
 the same way.
@@ -551,6 +639,28 @@ The WebUI is the admin panel, but players don't need it. From the game chat they
 - switch wondering
 - give it standing rules for the world
 - have it remember things
+
+### Time, weather and placeholders
+
+Every `clock.seconds` (10 by default, in **Map and vision**), Ptolemy reads the game's clock and weather:
+`time query daytime`, `time query day` and `weather query`. They only read, never change anything. In
+between, the time is worked out from the last reading (20 ticks a second), unless the daylight cycle
+seemed stopped. The time is shown on a 24-hour clock (daytime 0 is 06:00, 6000 noon, 18000 midnight):
+
+- the `[Now]` block tells the model the time, part of the day, day number and weather with every request,
+- `get_status` reads them fresh,
+- the Dashboard's **Right now** card shows them.
+
+**Placeholders:** a model can take a while to write its answer, so "it's 2 PM" may be wrong by the time
+it's sent. Instead it can write these, filled in the moment the message goes out (its replies, `send_chat`,
+`send_webui`, and for MCP clients too):
+
+| Placeholder | Becomes |
+| --- | --- |
+| `{time_now}` | The game time right now, 24-hour clock, e.g. `14:05` |
+| `{weather}` | `clear`, `rain` or `thunder` |
+| `{day}` | How many in-game days have passed |
+| `{my_coordinates}` | Where the robot is right now, `x y z` |
 
 ## World Memory
 
@@ -584,7 +694,8 @@ The LLM sees all of it in its system prompt, and MCP clients can read it with `g
 
 ## The Robot tab
 
-The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Robot tab puts everything on one screen:
+The WebUI has four tabs: **Robot**, **Commands**, **Configuration** and **Tutorial** (how everything works,
+plus every setting with its default and help, straight from the settings; click a group to jump to it). The Robot tab puts everything on one screen:
 
 - **Top half: the dashboard.** It fills the space exactly, so it doesn't scroll:
   - All cards share one height, the dashboard's height split evenly over the rows.
@@ -594,16 +705,21 @@ The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Rob
   - Only in a small window, or zoomed in a lot, do cards stop at that minimum and the dashboard
     scrolls.
   - The world: its name (click to rename), how it was recognised, other known worlds, and the agent.
-  - Right now: where the robot and the player are and in which areas, what the robot is doing, the
-    wondering countdown, and the active LLM endpoint with its test dots.
+  - Right now: where the robot and the player are and in which areas, the game time, day and weather,
+    what the robot is doing, the wondering countdown, and the active LLM endpoint with its test dots.
   - Connection details.
-  - Chat & wondering settings: wake word, ignore word, chat replies, and the wondering interval,
-    step limit and prompt.
+  - Chat & wondering settings: wake word, ignore word, chat replies, who may call it (only your player,
+    other robots), interrupting, the wondering interval, step limit and prompt, and On its mind
+    (fading thoughts, Forget and ADHD).
+  - Inventory: the 27 slots in three rows, which are held and with what; click one to hold or release it.
   - The robot's memory: the todo list (click a mark to go pending → in progress → done), what's on
     its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent
     activity, and this world's instructions.
   - The selected console response.
 - **Bottom half: Automatic, the Manual console and the Nanny Cam,** side by side.
+- **No agent yet?** When you connect and you (the connected player) don't have an agent in this world,
+  a **Create Agent** box covers the Automatic panel. Pressing it runs `agent create` and the box goes
+  away. Only your own agent counts: `agent getposition` never sees another player's.
 
 On narrow windows everything stacks and the page scrolls.
 
@@ -665,7 +781,7 @@ everything back (endpoints and keys stay).
 ## Nanny Cam
 
 The **Nanny Cam** panel (bottom right of the Robot tab) draws the robot's [map](#the-map-and-vision)
-around it, up to 30 blocks away, in 3D with WebGL2, using the GPU and no libraries. Vision keeps it live:
+around it, up to 100 blocks away, in 3D with WebGL2, using the GPU and no libraries. Vision keeps it live:
 new blocks and entities appear as the robot looks around.
 
 - **Map / Awareness / Vision** pick what's highlighted. All three draw the whole map; Awareness and
@@ -675,7 +791,7 @@ new blocks and entities appear as the robot looks around.
   Scanned blocks go onto the map; every look for entities replaces the entities shown.
 - **Drag** to orbit around the robot, **scroll** to move the camera closer or further, and
   **double-click** to reset.
-- **Zoom** limits the view to the blocks within that many blocks of the robot (up to 30), which helps
+- **Zoom** limits the view to the blocks within that many blocks of the robot (up to 100), which helps
   indoors or underground. Cut faces are drawn, so you can see inside walls.
 - **Hover** over a block to see its name and coordinates.
 - Named areas from World Memory are outlined with dotted lines, one colour each.
@@ -749,17 +865,23 @@ src/
   llm/tests.js           the Test endpoint / model / tools buttons
   llm/prompts.js         system prompt, text-mode tool calls
   llm/pilot.js           the Automatic mode loop and conversation
-  llm/wonder.js          wondering: the idle timer
+  llm/wonder.js          wondering: the idle timer, Forget and ADHD
+  agent/clock.js         the game's time and weather (read-only), and the {time_now}-style placeholders
+  agent/inventory.js     held inventory slots, kept stocked with agent setitem
   mcp/server.js          MCP over HTTP at /mcp
   mcp/stdio.js           MCP over stdio, relaying to /mcp (npm run mcp)
 public/
   index.html, style.css, app.js   the WebUI
-  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js   the tabs and panels
+  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js, tutorial.js   the tabs and panels
   blocks.js              block colours / solidity
 bench/
   sim.js                 a simulated world and a fake game answering Ptolemy's commands
   pathfinding.js         the pathfinding benchmark (npm run bench)
-  fake-game.js           try the WebUI without Minecraft (npm run fake-game, after npm start)
+  fake-game.js           try the WebUI without Minecraft (npm run fake-game, after npm start); type
+                         "Diego: Ptolemy, hi" or "robot Robo: hi Ptolemy" into it to fake chat,
+                         FAKE_NO_AGENT=1 to start without an agent
+scripts/                 the launchers' helpers (download Node.js, check whether npm install is needed)
+start.bat, start.sh      the launchers: Node.js (or a private copy), npm install, start, open the browser
 abandoned-minimap-project/        old prototype, kept for reference only
 ```
 

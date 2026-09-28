@@ -57,6 +57,7 @@
     switch (msg.type) {
       case 'status':
         renderStatus(msg);
+        document.dispatchEvent(new CustomEvent('ptolemy:status', { detail: msg }));
         break;
       case 'history':
         el.log.textContent = '';
@@ -82,6 +83,8 @@
       case 'memory':
       case 'memoryError':
       case 'positions':
+      case 'clock':
+      case 'inventory':
       case 'commands':
         // For the Nanny Cam, the Automatic tab and the Configuration tab.
         document.dispatchEvent(new CustomEvent(`ptolemy:${msg.type}`, { detail: msg }));

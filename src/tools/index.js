@@ -5,8 +5,10 @@ const { isSolid } = require('../../public/blocks');
 const { Frame } = require('../agent/frame');
 const players = require('../agent/players');
 const { CLEAR } = require('../world/map');
-const { checkCells, unknownAround } = require('../agent/survey');
+const { checkCells, unknownAround, surveyColumns } = require('../agent/survey');
+const { placeholderHelp } = require('../agent/clock');
 const entities = require('../agent/entities');
+const inv = require('../agent/inventory');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
 // game commands and report what actually happened, since the game's own replies say "success"
@@ -18,6 +20,9 @@ const MAX_MOVE = 64;
 const MAX_BLOCKS_QUERY = 64;
 const MAX_WAIT_S = 60;
 const MAX_SCAN_RADIUS = 15;
+// survey: gettopsolidblock on every column of a square (one command each: 17x17 = 289 at the default).
+const DEFAULT_SURVEY_RADIUS = 8;
+const MAX_SURVEY_RADIUS = 24;
 // The scan tool looks at everything up to this radius again; further out, only what isn't on the map.
 const FRESH_SCAN_RADIUS = 4;
 const LIST_ENTITIES = 30;
@@ -26,7 +31,10 @@ const ACT_POLLS = 6;
 const ACT_POLL_MS = 150;
 // Blocks that are everywhere: counted in scan summaries, but not listed one by one.
 const LIST_LIMIT_PER_TYPE = 5;
-const COMMON_THRESHOLD = 20;
+const COMMON_THRESHOLD = 20; // at least; a big scan counts as rare anything under 1 in 200 of its blocks
+// Scans this big or bigger (radius) get a top-down height grid of the whole area.
+const GRID_MIN_RADIUS = 2;
+const TRUNK = /\b(Log|Wood|Stem|Hyphae)$/;
 
 // Flying and teleporting are two different things, each allowed only when the request asks for it:
 // flying is go_to with fly (the robot moves block by block through the air), teleporting is an
@@ -95,7 +103,9 @@ function orientationText(facing) {
   }).join(', ');
 }
 
-const DIRECTION_HELP = 'One of the six blocks touching the robot.';
+const DIRECTION_HELP = 'Which of the six cells touching the robot, as seen from the robot: forward = the cell in front of it, '
+  + 'back = behind it, left / right = beside it, up = the cell right above it, down = the cell right under it. "down" never '
+  + 'means "put it down": a block placed in front of the robot is direction forward.';
 const dirParam = (description) => ({ type: 'string', enum: DIRECTIONS, description: `${description} ${DIRECTION_HELP}` });
 // A position is either relative (counts of blocks from the robot, by direction) or world (x, y, z).
 // The two never share names, so the model can't mix them up.
@@ -127,8 +137,14 @@ const POSITION = {
  * @param {(text: string) => void} deps.notify   show a message in the WebUI
  * @param {() => void} [deps.activity]   called after every tool call (resets the wondering countdown)
  * @param {(mode: string) => void} [deps.setWonder]   switch wondering off / on / always
+ * @param {import('../agent/clock').Clock} [deps.clock]   the game's time and weather
+ * @param {(text: string) => Promise<string>} [deps.placeholders]   fills in {time_now} and friends
+ * @param {import('../agent/inventory').Inventory} [deps.inventory]   held inventory slots
  */
-function createToolbox({ bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder }) {
+function createToolbox({
+  bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder, clock = null,
+  placeholders = async (text) => text, inventory = null,
+}) {
   const memory = () => {
     if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
     return worlds.current;
@@ -183,7 +199,22 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
 
 
 
-  /** Run `agent <verb> <direction>` and report what changed in that cell. */
+  /**
+   * What stands in a cell (players, mobs, another robot): names, from testfor over the cell and the ones
+   * below and above it (a player or tall mob standing below reaches up into it, and a position can be
+   * read at eye height). Only asked after a placement failed, so a neighbour now and then is fine. The
+   * robot itself is left out.
+   */
+  async function entitiesIn(x, y, z) {
+    const res = await bridge.sendCommand(`testfor @e[x=${x},y=${y - 1},z=${z},dx=0,dy=2,dz=0]`, { quiet: true });
+    return entities.parseNames(res).map(entities.displayName).filter((n) => !/\bagent\b/i.test(n));
+  }
+
+  /**
+   * Run `agent <verb> <direction>` and report what changed in that cell. Throws (an error the model
+   * sees as a failed call) when nothing changed, saying why: nothing to break, a block that won't break,
+   * a cell that isn't empty, someone standing in the way, or (likely) an empty inventory slot.
+   */
   async function actOnCell(verb, direction, extra = '') {
     const pose = await getAgentPose(bridge);
     const [dx, dy, dz] = offsetOf(direction, pose.facing);
@@ -197,11 +228,83 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       after = await blockAt(x, y, z);
     }
     world.setBlock(x, y, z, after);
-    const frame = await frameNow(pose);
     const where = `${direction} of the robot (${Frame.world(x, y, z)})`;
     const game = `The game said: "${res.statusMessage}".`;
-    if (before === after) return `Nothing changed ${where}: it is still ${after}. ${game}`;
-    return `The block ${where} went from ${before} to ${after}. ${game}`;
+    if (before !== after) return `The block ${where} went from ${before} to ${after}. ${game}`;
+    if (verb === 'destroy') {
+      if (!isSolid(after)) throw new Error(`nothing to break ${where}: it is ${after}. ${game}`);
+      throw new Error(`couldn't break the ${after} ${where}: it is still there (some blocks, like bedrock, can't be broken). ${game}`);
+    }
+    if (verb === 'place' && isSolid(after)) {
+      throw new Error(`couldn't place ${where}: that cell isn't empty, it is ${after}. Use replace to break it and place in one `
+        + `go, or pick another cell. ${game}`);
+    }
+    if (verb === 'place') {
+      const inTheWay = await entitiesIn(x, y, z).catch(() => []);
+      if (inTheWay.length) {
+        throw new Error(`couldn't place ${where}: ${inTheWay.join(', ')} ${inTheWay.length > 1 ? 'are' : 'is'} in the way (a block `
+          + `can't go where a player, a mob or a robot stands). Wait for them to move, or pick another cell. ${game}`);
+      }
+      throw new Error(`nothing was placed ${where}: it is still ${after}, and nothing seems to stand there, so the inventory slot `
+        + `is probably empty (hold keeps a slot stocked). ${game}`);
+    }
+    throw new Error(`nothing changed ${where}: it is still ${after}. ${game}`);
+  }
+
+  /** Run fn; if it fails, say what already happened before it (e.g. walking to the block). */
+  async function withNote(note, fn) {
+    try {
+      return note + await fn();
+    } catch (err) {
+      throw note ? new Error(`${note}Then: ${err.message}`) : err;
+    }
+  }
+
+  /** The cell beside the robot in a direction: [x, y, z]. */
+  async function cellToward(direction) {
+    const pose = await getAgentPose(bridge);
+    const [dx, dy, dz] = offsetOf(direction, pose.facing);
+    return [pose.x + dx, pose.y + dy, pose.z + dz];
+  }
+
+  /**
+   * Is the block at this cell the block asked for? The name the game gave ("Oak Log") is compared with
+   * the id asked for ("oak_log", "minecraft:oak_log"), and if they differ the game is asked with
+   * testforblock (which knows old names like "log" and "wood" too). Resolves to { ok, current }.
+   */
+  async function blockMatches(cell, wanted) {
+    const norm = (b) => String(b).trim().toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_');
+    const current = await blockAt(...cell);
+    const want = norm(wanted);
+    if (!/^[a-z0-9_:]+$/.test(want)) throw new Error(`"${wanted}" isn't a block id (e.g. oak_log, stone)`);
+    if (norm(current) === want) return { ok: true, current };
+    const res = await bridge.sendCommand(`testforblock ${cell.join(' ')} ${want}`, { quiet: true });
+    if (res.body && res.body.matches === true) return { ok: true, current };
+    if (!res.ok && !/\bis .+\(expected/i.test(res.statusMessage || '')) {
+      throw new Error(`the game doesn't know the block "${wanted}" (${res.statusMessage})`);
+    }
+    return { ok: false, current };
+  }
+
+  /**
+   * Break what's in a cell beside the robot (if it's solid: air, water and plants are placed into
+   * directly), then place from a slot there. Throws if either step fails, saying what was done.
+   */
+  async function replaceCell(direction, slot) {
+    const cell = await cellToward(direction);
+    const before = await blockAt(...cell);
+    const broke = isSolid(before) ? `${await actOnCell('destroy', direction)} ` : '';
+    return withNote(broke, () => actOnCell('place', direction, `${slot} `));
+  }
+
+  /** The horizontal direction (forward, back, left, right) that points most towards a spot. */
+  function directionToward(pose, p) {
+    const dx = p.x - pose.x;
+    const dz = p.z - pose.z;
+    return ['forward', 'back', 'left', 'right'].map((d) => {
+      const [ox, , oz] = offsetOf(d, pose.facing);
+      return { d, score: ox * dx + oz * dz };
+    }).sort((a, b) => b.score - a.score)[0].d;
   }
 
   /** Which of the six directions leads from the robot's cell to a face-adjacent cell, or null. */
@@ -215,9 +318,11 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
   /**
    * destroy / place / attack on a block given either as a direction or as coordinates. With
    * coordinates the robot first walks to a cell beside the block (never into it), then acts in the
-   * right direction. Returns { direction, note } or { error }.
+   * right direction. With `stepAside` (place, replace), a target that is the robot's own cell is
+   * handled by stepping out of it first: up if that's free (then placing down), else to a free side.
+   * Returns { direction, note } or { error }.
    */
-  async function reach(args) {
+  async function reach(args, { stepAside = false } = {}) {
     const { direction } = args;
     if (direction !== undefined && direction !== null && direction !== '') {
       checkDirection(direction);
@@ -231,7 +336,9 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
         + 'position: relative (e.g. forward 2, left 1) or world (x, y, z)');
     }
     if (target[0] === pose.x && target[1] === pose.y && target[2] === pose.z) {
-      return { error: 'That is where the robot itself is. Give a block next to it, e.g. direction "forward".' };
+      if (stepAside) return stepOutOf(pose, target);
+      return { error: 'That is the cell the robot is in. The robot can\'t act on its own cell, and it can\'t move into a block: '
+        + 'it works on a cell NEXT to it. Give a direction (forward, back, left, right, up, down) or a position touching the robot.' };
     }
     const adjacent = directionTo(pose, ...target);
     if (adjacent) return { direction: adjacent, note: '' };
@@ -251,6 +358,29 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       return { error: `Couldn't get next to that block: ${lines.map((l) => afterFrame.convertText(l)).join(' ')}` };
     }
     return { direction: dir, note: `Walked next to it first (${countMoved(pose, after)} blocks). ${afterMove(afterFrame)} ` };
+  }
+
+  /**
+   * The robot is standing in the cell it should place into: move one block out of it (up first, then
+   * the sides) and target the cell it left. Returns { direction, note } or { error }.
+   */
+  async function stepOutOf(pose, target) {
+    for (const d of ['up', 'left', 'right', 'back', 'forward']) {
+      const [dx, dy, dz] = offsetOf(d, pose.facing);
+      const cell = [pose.x + dx, pose.y + dy, pose.z + dz];
+      if (isSolid(await blockAt(...cell))) continue;
+      const expect = { x: cell[0], y: cell[1], z: cell[2], facing: pose.facing };
+      const result = await navigator.runSteps([{ action: d, command: `agent move ${d}`, expect, enters: cell }]);
+      if (!result.ok) continue;
+      const now = await getAgentPose(bridge);
+      const dir = directionTo(now, ...target);
+      if (dir) {
+        return { direction: dir, note: `The robot was standing in that cell, so it moved 1 ${d} first and works on it from there `
+          + `(direction ${dir}). ` };
+      }
+    }
+    return { error: 'The robot is standing in that cell and can\'t step out of it (up and every side are blocked), so nothing '
+      + 'can be placed there.' };
   }
 
   /** A look for entities, told the way a model can use it. */
@@ -289,7 +419,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
     const mode = settings.get('llm.coordinates');
     const fresh = await scan(Math.min(r, FRESH_SCAN_RADIUS), { quiet: true });
     if (!fresh) throw new Error('the scan failed (see the console)');
-    if (r <= FRESH_SCAN_RADIUS) return summarizeScan(fresh, mode);
+    if (r <= FRESH_SCAN_RADIUS) return summarizeScan(fresh, mode, { grid: true });
     const { x, y, z } = fresh.agent.position;
     const pose = { x, y, z, yRot: fresh.agent.yRot };
     const unseen = unknownAround(world, pose, r);
@@ -297,7 +427,8 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
     const size = (2 * r + 1) ** 3;
     return mapSummary(world, pose, r, mode, `Looked at ${fresh.cells.length + unseen.length} of the ${size} blocks around you `
       + `(the nearest ${fresh.cells.length} again, plus everything not on your map yet); the rest is from your map. `
-      + `You are at ${Frame.world(x, y, z)}, facing ${compassName(((Math.round(pose.yRot / 90) % 4) + 4) % 4)}.`);
+      + `You are at ${Frame.world(x, y, z)}, facing ${compassName(((Math.round(pose.yRot / 90) % 4) + 4) % 4)}. `
+      + `Everything below covers the whole scan, ${r} blocks out in every direction.`, { grid: true });
   }
 
   add({
@@ -308,6 +439,11 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       const lines = [];
       lines.push(`Minecraft: connected as ${bridge.player || 'unknown player'}`
         + `${worlds.current ? `, in the world "${worlds.current.name}"` : ''}.`);
+      if (clock) {
+        await clock.refresh().catch(() => null);
+        const time = clock.describe();
+        if (time) lines.push(`Game time: ${time}.`);
+      }
       const pose = await getAgentPose(bridge);
       const frame = await frameNow(pose);
       const here = worlds.current && worlds.current.describeAreasAt(pose.x, pose.y, pose.z);
@@ -345,7 +481,10 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
       + 'doesn\'t know yet (the rest comes from the map), so a big scan of a known place is quick. '
       + 'what "entities": mobs, animals, players and dropped items (fast, up to '
       + `${entities.MAX_RADIUS} blocks away): what each one is, where, how far, and which are hostile. They move, so call it `
-      + 'again before acting on one; to attack one, pass its position to attack. what "both" (the default): the two at once.',
+      + 'again before acting on one; to attack one, pass its position to attack. what "both" (the default): the two at once. '
+      + 'The result covers the whole radius you asked for, including a top-down grid of how high the ground is. To see '
+      + 'far down a cliff or up a wall or tree, use survey instead.',
+    longResult: true,
     parameters: {
       type: 'object',
       properties: {
@@ -365,6 +504,30 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
         mode !== 'blocks' && entitiesText(entities.entityRadius(mode === 'entities' ? radius : radius ?? r, mode)),
       ]);
       return [blocks, seen].filter(Boolean).join('\n');
+    },
+  });
+
+  add({
+    name: 'survey',
+    description: 'A view of the land around the robot from above: the height of the highest solid block of every column '
+      + `in a square (up to ${MAX_SURVEY_RADIUS} blocks out, default ${DEFAULT_SURVEY_RADIUS}), however far up or down it is. `
+      + 'Use it where a scan\'s cube doesn\'t reach: at the edge of a cliff (how far down it goes), in front of a wall, '
+      + 'hill or tall tree (how high it goes), or to see the lay of the land before a trip. One quick command per '
+      + 'column (gettopsolidblock): it sees through air, leaves and water, and doesn\'t see caves under the surface.',
+    longResult: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        radius: { type: 'integer', minimum: 1, maximum: MAX_SURVEY_RADIUS, description: `Columns in each direction (default ${DEFAULT_SURVEY_RADIUS}).` },
+      },
+    },
+    async run({ radius }) {
+      const r = clampInt(radius ?? DEFAULT_SURVEY_RADIUS, 1, MAX_SURVEY_RADIUS);
+      const pose = await getAgentPose(bridge);
+      const columns = [];
+      for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) columns.push([pose.x + dx, pose.z + dz]);
+      const found = await surveyColumns(bridge, world, columns, pose.y, { headroom: 24 });
+      return summarizeSurvey(found, await frameNow(pose), r);
     },
   });
 
@@ -580,39 +743,104 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
 
   // --- Acting on blocks -------------------------------------------------------
 
+  const WHERE = 'The robot always works on a cell NEXT to it, never on the cell it is in, and it can\'t move into a solid '
+    + 'block. Give EITHER direction (for a cell touching the robot) OR the cell\'s position, relative (e.g. {forward: 2, '
+    + 'left: 1}) or world ({x, y, z}), at any distance: the robot first walks to a free spot beside it, then acts on it.';
+  const SLOT = { type: 'integer', minimum: 1, maximum: 27, description: 'Inventory slot (1-27). Your memory says which slots are '
+    + 'kept stocked with what; the others are unknown.' };
+  const BLOCK = { type: 'string', description: 'The block id it must be, e.g. "oak_log", "stone", "dirt".' };
+
   add({
     name: 'destroy',
-    description: 'Break one block. The robot stays where it is and breaks the block beside it in the given direction: it never '
-      + 'moves into the block. Give either a direction (for a block touching the robot) or the block\'s position, relative '
-      + '(e.g. forward 1, left 1) or world (x, y, z), at any distance: the robot first walks to a spot beside it. '
-      + 'The drop may go into the robot\'s inventory or onto the ground.',
+    description: 'Break the one block in a cell touching the robot. The robot stays where it is. '
+      + `${WHERE} Examples: the block in front: {direction: "forward"}; the block the robot stands on: {direction: "down"}; `
+      + 'a block ahead and to the left: {forward: 1, left: 1}. The drop may go into the robot\'s inventory or onto the ground. '
+      + 'Prefer safe_destroy whenever you know what the block is (you usually do): it won\'t break the wrong one. Use destroy '
+      + 'only when you can\'t know, or any block will do.',
     destructive: true,
-    parameters: { type: 'object', properties: { direction: dirParam('Which neighbouring block.'), ...POSITION_PROPS } },
+    parameters: { type: 'object', properties: { direction: dirParam('Which cell\'s block to break.'), ...POSITION_PROPS } },
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
-      return r.note + await actOnCell('destroy', r.direction);
+      return withNote(r.note, () => actOnCell('destroy', r.direction));
+    },
+  });
+
+  add({
+    name: 'safe_destroy',
+    description: 'Break a block, but only if it is the one named (e.g. "oak_log"): the preferred way to break blocks. A wrong '
+      + 'direction or an out-of-date position then does nothing instead of breaking a wall or a player\'s build. The [Now] '
+      + `block says what touches you; scan and get_blocks tell the rest. ${WHERE}`,
+    destructive: true,
+    parameters: {
+      type: 'object',
+      properties: { block: BLOCK, direction: dirParam('Which cell\'s block to break.'), ...POSITION_PROPS },
+      required: ['block'],
+    },
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      const check = await blockMatches(await cellToward(r.direction), args.block);
+      if (!check.ok) return `${r.note}Not destroyed: the block ${r.direction} of the robot is ${check.current}, not ${args.block}.`;
+      return withNote(r.note, () => actOnCell('destroy', r.direction));
     },
   });
 
   add({
     name: 'place',
-    description: 'Place a block from one of the robot\'s inventory slots (1-27) into an empty cell. The robot stays where it is '
-      + 'and fills the cell beside it in the given direction. Give either a direction or the empty cell\'s position (relative '
-      + 'or world, any distance: the robot first walks to a spot beside it).',
+    description: 'Put a block from an inventory slot into an EMPTY cell touching the robot (air, water, grass...). The robot '
+      + `stays where it is. ${WHERE} Examples: a block in front of the robot: {slot: 1, direction: "forward"}; a block under `
+      + 'the robot (a floor or a bridge under itself): {slot: 1, direction: "down"}; on top of it: "up". '
+      + 'To put a block where the robot is right now, it has to get out of the way first: move up 1, then place down (if up '
+      + 'is blocked, move to a free side and place back towards that cell). Given the robot\'s own cell as the position, '
+      + 'place does that by itself. If the cell holds a block, use replace instead.',
     parameters: {
       type: 'object',
-      properties: {
-        slot: { type: 'integer', minimum: 1, maximum: 27 },
-        direction: dirParam('Which neighbouring cell to fill.'),
-        ...POSITION_PROPS,
-      },
+      properties: { slot: SLOT, direction: dirParam('Which cell to fill.'), ...POSITION_PROPS },
       required: ['slot'],
+    },
+    async run(args) {
+      const r = await reach(args, { stepAside: true });
+      if (r.error) throw new Error(r.error);
+      return withNote(r.note, () => actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `));
+    },
+  });
+
+  add({
+    name: 'replace',
+    description: 'Put a block from an inventory slot into a cell touching the robot, whatever is there now: it breaks the '
+      + 'block first (if any), then places. It always ends with the new block there, unless the slot is empty (then it only '
+      + `breaks) or the old block can't be broken. ${WHERE} Prefer safe_replace whenever you know what's there now; use replace `
+      + 'only when you can\'t know, or any block will do.',
+    destructive: true,
+    parameters: {
+      type: 'object',
+      properties: { slot: SLOT, direction: dirParam('Which cell.'), ...POSITION_PROPS },
+      required: ['slot'],
+    },
+    async run(args) {
+      const r = await reach(args, { stepAside: true });
+      if (r.error) throw new Error(r.error);
+      return withNote(r.note, () => replaceCell(r.direction, clampInt(args.slot, 1, 27)));
+    },
+  });
+
+  add({
+    name: 'safe_replace',
+    description: 'Replace a block, but only if the block there now is the one named (e.g. replace "dirt" with planks from a '
+      + `slot); otherwise it does nothing. The preferred way to replace blocks: nothing else gets broken by mistake. ${WHERE}`,
+    destructive: true,
+    parameters: {
+      type: 'object',
+      properties: { block: BLOCK, slot: SLOT, direction: dirParam('Which cell.'), ...POSITION_PROPS },
+      required: ['block', 'slot'],
     },
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
-      return r.note + await actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `);
+      const check = await blockMatches(await cellToward(r.direction), args.block);
+      if (!check.ok) return `${r.note}Not replaced: the block ${r.direction} of the robot is ${check.current}, not ${args.block}.`;
+      return withNote(r.note, () => replaceCell(r.direction, clampInt(args.slot, 1, 27)));
     },
   });
 
@@ -642,20 +870,91 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
 
   add({
     name: 'drop',
-    description: 'Drop items from one of the robot\'s inventory slots (1-27) in a direction.',
+    description: 'Drop items from one of the robot\'s inventory slots (1-27) onto the ground beside it, e.g. to hand a player '
+      + 'something from a held slot. To give an item that isn\'t in a held slot, use give_item.',
     parameters: {
       type: 'object',
       properties: {
-        slot: { type: 'integer', minimum: 1, maximum: 27 },
-        quantity: { type: 'integer', minimum: 1, maximum: 64 },
-        direction: dirParam('Which way to drop.'),
+        slot: SLOT,
+        quantity: { type: 'integer', minimum: 1, maximum: 64, description: 'How many (default 1).' },
+        direction: dirParam('Which way to drop (default forward).'),
       },
-      required: ['slot', 'direction'],
+      required: ['slot'],
     },
-    async run({ slot, quantity, direction }) {
+    async run({ slot, quantity, direction = 'forward' }) {
       checkDirection(direction);
-      const res = await bridge.sendCommand(`agent drop ${clampInt(slot, 1, 27)} ${clampInt(quantity ?? 64, 1, 64)} ${direction}`);
-      return `The game said: "${res.statusMessage}".`;
+      const n = clampInt(quantity ?? 1, 1, 64);
+      const res = await bridge.sendCommand(`agent drop ${clampInt(slot, 1, 27)} ${n} ${direction}`);
+      if (!res.ok) throw new Error(`couldn't drop from slot ${clampInt(slot, 1, 27)} (it may be empty): ${res.statusMessage}`);
+      return `Dropped ${n} from slot ${clampInt(slot, 1, 27)} ${direction}. The game said: "${res.statusMessage}".`;
+    },
+  });
+
+  add({
+    name: 'give_item',
+    description: 'Give items: they are made in the robot\'s scratch slot (27) and dropped beside it, towards the player who asked '
+      + 'if they are within a few blocks (otherwise forward). Go near the player first (go_to target "player"). Any item id '
+      + 'works, e.g. "oak_planks", "torch", "bread"; variant picks a variant for old ids (e.g. "wood" with variant 1 = spruce).',
+    parameters: {
+      type: 'object',
+      properties: {
+        item: { type: 'string', description: 'Item id, e.g. "oak_planks".' },
+        amount: { type: 'integer', minimum: 1, maximum: 64, description: 'How many (default 1).' },
+        variant: { type: 'integer', minimum: 0, description: 'Variant (data value), default 0.' },
+        direction: dirParam('Which way to drop them (default: towards the player who asked, if near; else forward).'),
+      },
+      required: ['item'],
+    },
+    async run({ item, amount, variant, direction }) {
+      const id = inv.itemId(item);
+      const n = clampInt(amount ?? 1, 1, 64);
+      const data = inv.variantNumber(variant ?? 0);
+      let dir = direction;
+      if (dir) checkDirection(dir);
+      else {
+        const pose = await getAgentPose(bridge);
+        const p = await players.playerPosition(bridge, requester);
+        dir = p && Math.hypot(p.x - pose.x, p.z - pose.z) <= 6 ? directionToward(pose, p) : 'forward';
+      }
+      const set = await bridge.sendCommand(`agent setitem ${inv.SCRATCH_SLOT} ${id} ${n} ${data}`);
+      if (!set.ok) throw new Error(`the game refused the item "${id}": ${set.statusMessage}`);
+      const res = await bridge.sendCommand(`agent drop ${inv.SCRATCH_SLOT} ${n} ${dir}`);
+      if (!res.ok) throw new Error(`made the ${id} but couldn't drop it: ${res.statusMessage}`);
+      return `Dropped ${n} ${id}${data ? ` (variant ${data})` : ''} ${dir} of the robot. The game said: "${res.statusMessage}".`;
+    },
+  });
+
+  add({
+    name: 'hold',
+    description: 'Keep one of your inventory slots (1-26) stocked with an item for good: it is refilled every second, so it never '
+      + 'runs out, and your memory lists it. Use it before building with place / replace, e.g. hold {slot: 1, item: '
+      + '"oak_planks"}. Slot 27 is scratch space and can\'t be held.',
+    parameters: {
+      type: 'object',
+      properties: {
+        slot: { type: 'integer', minimum: 1, maximum: inv.HOLD_SLOTS },
+        item: { type: 'string', description: 'Item id, e.g. "oak_planks", "cobblestone", "glass".' },
+        variant: { type: 'integer', minimum: 0, description: 'Variant (data value) for old ids, default 0.' },
+      },
+      required: ['slot', 'item'],
+    },
+    async run({ slot, item, variant }) {
+      if (!inventory) throw new Error('holding items isn\'t available here');
+      const h = await inventory.hold(slot, item, variant ?? 0);
+      return `Slot ${h.slot} now holds ${h.item}${h.data ? ` (variant ${h.data})` : ''} and is kept stocked.`;
+    },
+  });
+
+  add({
+    name: 'release',
+    description: 'Stop keeping a slot (1-26) stocked. The slot can\'t be emptied, so afterwards what\'s in it is simply unknown.',
+    offline: true,
+    parameters: { type: 'object', properties: { slot: { type: 'integer', minimum: 1, maximum: inv.HOLD_SLOTS } }, required: ['slot'] },
+    async run({ slot }) {
+      if (!inventory) throw new Error('holding items isn\'t available here');
+      const old = inventory.release(slot);
+      return old ? `Slot ${old.slot} is no longer kept stocked with ${old.item}; what's in it is unknown now.`
+        : `Slot ${slot} wasn't held.`;
     },
   });
 
@@ -664,25 +963,27 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
   add({
     name: 'send_chat',
     description: 'Send a message to the Minecraft chat, seen by every player (keep it short, no markdown). '
-      + 'Use it to tell players something even when the request came from the WebUI.',
+      + 'Use it to tell players something even when the request came from the WebUI, or to talk to another robot (it only '
+      + `hears messages containing its name). Placeholders are filled in as it is sent: ${placeholderHelp()}.`,
     parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
     async run({ message }) {
-      const res = await sayInChat(bridge, settings, String(message || ''));
-      return res.ok ? 'Sent to the game chat.' : `Couldn't send it: ${res.statusMessage}`;
+      const text = await placeholders(String(message || ''));
+      const res = await sayInChat(bridge, settings, text);
+      return res.ok ? `Sent to the game chat: "${text}"` : `Couldn't send it: ${res.statusMessage}`;
     },
   });
 
   add({
     name: 'send_webui',
     description: 'Show a message to the person at the Ptolemy WebUI (highlighted in the Automatic tab), '
-      + 'even when the request came from the game chat.',
+      + `even when the request came from the game chat. Placeholders are filled in as it is sent: ${placeholderHelp()}.`,
     offline: true,
     parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
     async run({ message }) {
-      const text = String(message || '').trim();
+      const text = (await placeholders(String(message || ''))).trim();
       if (!text) throw new Error('empty message');
       notify(text.slice(0, 2000));
-      return 'Shown in the WebUI.';
+      return `Shown in the WebUI: "${text.slice(0, 2000)}"`;
     },
   });
 
@@ -765,7 +1066,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
   add({
     name: 'add_thought',
     description: 'Put something on your mind, a passing wish or curiosity ("I want to see the flowers by the river"). '
-      + 'You may act on it later, e.g. while wondering. Only the last few thoughts are kept.',
+      + 'You may act on it later, e.g. while wondering. Thoughts fade with time, and only the last few are kept.',
     offline: true,
     parameters: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] },
     async run({ thought }) {
@@ -904,8 +1205,10 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
     parameters: { type: 'object', properties: { seconds: { type: 'number', minimum: 1, maximum: MAX_WAIT_S } }, required: ['seconds'] },
     async run({ seconds }, { signal } = {}) {
       const s = Math.min(MAX_WAIT_S, Math.max(0, Number(seconds) || 1));
+      const started = Date.now();
       await sleep(s * 1000, signal);
-      return `Waited ${s}s.`;
+      const waited = Math.round((Date.now() - started) / 100) / 10;
+      return waited < s - 0.5 ? `Waited ${waited}s of ${s}s: interrupted.` : `Waited ${s}s.`;
     },
   });
 
@@ -1020,7 +1323,7 @@ function createToolbox({ bridge, world, navigator, settings, scan, lookForEntiti
  * A scan, told the way a model can use it. Cells whose block is '?' are unknown (not identified,
  * or not on the map yet). `intro` replaces the first line, `unknownText(n)` the line counting them.
  */
-function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) => `${n} blocks couldn't be identified.` } = {}) {
+function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) => `${n} blocks couldn't be identified.`, grid = false } = {}) {
   const { x: ax, y: ay, z: az } = scan.agent.position;
   const facing = ((Math.round(scan.agent.yRot / 90) % 4) + 4) % 4;
   const frame = new Frame({ x: ax, y: ay, z: az, facing }, mode);
@@ -1060,17 +1363,34 @@ function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) =
   const air = scan.cells.length - unknown - types.reduce((n, [, cells]) => n + cells.length, 0);
   lines.push(`Counts: Air ${air}, ${types.map(([name, cells]) => `${name} ${cells.length}`).join(', ') || 'nothing else'}.`);
 
-  const rare = types.filter(([, cells]) => cells.length <= COMMON_THRESHOLD);
+  // What counts as common grows with the scan, so a big scan still says where the trees and ores are.
+  const threshold = Math.max(COMMON_THRESHOLD, Math.round(scan.cells.length / 200));
+  const rare = types.filter(([, cells]) => cells.length <= threshold);
   if (rare.length) {
     lines.push('Where the less common blocks are (nearest first):');
-    for (const [name, cells] of rare.reverse()) {
+    for (const [name, cells] of [...rare].reverse()) {
       const nearest = [...cells].sort((a, b) => dist(a) - dist(b)).slice(0, LIST_LIMIT_PER_TYPE);
       lines.push(`  ${name}: ${nearest.map((c) => frame.fmt(c.x, c.y, c.z)).join('; ')}${cells.length > nearest.length ? ` (+${cells.length - nearest.length} more)` : ''}`);
     }
   }
+  const common = types.filter(([, cells]) => cells.length > threshold);
+  if (grid && common.length) {
+    lines.push('The common blocks (the nearest one, and the heights they fill):');
+    for (const [name, cells] of common) {
+      const nearest = cells.reduce((a, c) => (dist(c) < dist(a) ? c : a));
+      const lo = Math.min(...cells.map((c) => c.y));
+      const hi = Math.max(...cells.map((c) => c.y));
+      const span = frame.relative
+        ? (lo === hi ? vertical(lo - ay) : `from ${vertical(lo - ay)} to ${vertical(hi - ay)}`)
+        : (lo === hi ? `y=${lo}` : `y=${lo}..${hi}`);
+      lines.push(`  ${name}: nearest ${frame.fmt(nearest.x, nearest.y, nearest.z)}; ${span}`);
+    }
+  }
 
   // Terrain height: the top solid block of a few columns, so the model can tell hills from flat ground.
-  const b = scan.cells.reduce((acc, c) => ({ minY: Math.min(acc.minY, c.y), maxY: Math.max(acc.maxY, c.y) }), { minY: Infinity, maxY: -Infinity });
+  const b = scan.cells.reduce((acc, c) => ({
+    minY: Math.min(acc.minY, c.y), maxY: Math.max(acc.maxY, c.y), minX: Math.min(acc.minX, c.x), maxX: Math.max(acc.maxX, c.x),
+  }), { minY: Infinity, maxY: -Infinity, minX: Infinity, maxX: -Infinity });
   const tops = [];
   for (const d of ['forward', 'back', 'left', 'right']) {
     const [dx, , dz] = offsetOf(d, facing);
@@ -1090,7 +1410,136 @@ function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) =
     }
   }
   lines.push(`Highest solid block of nearby columns: ${tops.join(', ')}.`);
+  const r = Math.round((b.maxX - b.minX) / 2);
+  if (grid && r >= GRID_MIN_RADIUS) {
+    // The top solid block of every column of the scan (within the scan's own height).
+    const topAt = (x, z) => {
+      for (let y = b.maxY; y >= b.minY; y--) {
+        const block = at.get(`${x},${y},${z}`);
+        if (block === undefined || block === '?') return undefined;
+        if (solidAt(block)) return y;
+      }
+      return null;
+    };
+    lines.push(`Top-down view of the whole scan: ${heightGrid(frame, r, topAt, {
+      what: 'the highest solid block of that column within the scan', none: 'nothing solid in the scan',
+    })}`);
+  }
   if (unknown) lines.push(unknownText(unknown));
+  return lines.join('\n');
+}
+
+/**
+ * A top-down grid of column heights around the robot, `radius` columns out: in the relative frame
+ * forward is up and each number is blocks above (+) or below (-) the robot; in world coordinates
+ * north is up and each number is the world y. `topAt(x, z)` gives the y, null (nothing) or undefined (unseen).
+ */
+function heightGrid(frame, radius, topAt, { what, none }) {
+  const { pose } = frame;
+  const rows = [];
+  let head;
+  if (frame.relative) {
+    const [fx, , fz] = offsetOf('forward', pose.facing);
+    const [rx, , rz] = offsetOf('right', pose.facing);
+    head = `rows go from ${radius} forward (top) to ${radius} back (bottom), columns from ${radius} left to ${radius} right. `
+      + `Each number is ${what}, in blocks above (+) or below (-) you; @ is you, ? not seen, . ${none}.`;
+    for (let f = radius; f >= -radius; f--) {
+      const row = [];
+      for (let r = -radius; r <= radius; r++) {
+        const y = f || r ? topAt(pose.x + fx * f + rx * r, pose.z + fz * f + rz * r) : '@';
+        row.push(y === '@' ? '@' : y === undefined ? '?' : y === null ? '.' : signed(y - pose.y));
+      }
+      rows.push(row.map((v) => v.padStart(4)).join(''));
+    }
+  } else {
+    head = `rows go from z=${pose.z - radius} (north, top) to z=${pose.z + radius} (south), columns from x=${pose.x - radius} `
+      + `(west) to x=${pose.x + radius} (east). Each number is the world y of ${what}; @ is the robot (at y=${pose.y}), `
+      + `? not seen, . ${none}.`;
+    for (let z = pose.z - radius; z <= pose.z + radius; z++) {
+      const row = [];
+      for (let x = pose.x - radius; x <= pose.x + radius; x++) {
+        const y = x === pose.x && z === pose.z ? '@' : topAt(x, z);
+        row.push(y === '@' ? '@' : y === undefined ? '?' : y === null ? '.' : String(y));
+      }
+      rows.push(row.map((v) => v.padStart(4)).join(''));
+    }
+  }
+  return `${head}\n${rows.join('\n')}`;
+}
+
+function signed(n) {
+  return n > 0 ? `+${n}` : String(n);
+}
+
+/**
+ * What the survey tool found: gettopsolidblock on every column of a square around the robot
+ * ({ tops, ground, unloaded, commands } from surveyColumns), told the way a model can use it.
+ */
+function summarizeSurvey(found, frame, radius) {
+  const { pose } = frame;
+  const key = (x, z) => `${x},${z}`;
+  const topAt = (x, z) => {
+    const t = found.tops.get(key(x, z));
+    return t ? t.y : undefined;
+  };
+  const vertical = (dy) => (dy === 0 ? 'level with you' : `${Math.abs(dy)} ${dy > 0 ? 'up' : 'down'}`);
+  const height = (y) => (frame.relative ? vertical(y - pose.y) : `y=${y}`);
+  const size = 2 * radius + 1;
+  const lines = [`Surveyed the surface around you with gettopsolidblock: ${size}x${size} columns, ${found.commands} commands`
+    + `${found.unloaded ? ` (${found.unloaded} in chunks that aren't loaded: ?)` : ''}. It sees through air, leaves and water, `
+    + 'not into caves. You are at ' + `${Frame.world(pose.x, pose.y, pose.z)}, facing ${compassName(pose.facing)}.`];
+  lines.push(`Top-down view: ${heightGrid(frame, radius, topAt, { what: 'the highest solid block of that column', none: 'nothing' })}`);
+
+  const own = found.tops.get(key(pose.x, pose.z));
+  if (own && own.y > pose.y) {
+    lines.push(`Above you: ${own.name}, ${height(own.y)}. You are under a roof, an overhang or underground, so the heights `
+      + 'around you may be the top of what is above you, not the floor you are on.');
+  } else if (own) {
+    const g = found.ground.get(key(pose.x, pose.z));
+    lines.push(`Ground under you: ${own.name}, ${height(own.y)} (${pose.y - (g ?? own.y) - 1} blocks of air between it and you).`);
+  }
+
+  // Straight lines out from the robot: how the land rises and falls, and where it does so suddenly.
+  const steps = [];
+  for (const d of ['forward', 'back', 'left', 'right']) {
+    const [dx, , dz] = offsetOf(d, pose.facing);
+    const heights = [];
+    let prev = found.ground.get(key(pose.x, pose.z)) ?? topAt(pose.x, pose.z);
+    for (let k = 1; k <= radius; k++) {
+      const x = pose.x + dx * k;
+      const z = pose.z + dz * k;
+      const y = topAt(x, z);
+      heights.push(y === undefined ? '?' : frame.relative ? signed(y - pose.y) : String(y));
+      // Tree trunks stick up out of the ground: they're listed as trees, not as cliffs.
+      const trunk = y !== undefined && TRUNK.test(found.tops.get(key(x, z)).name);
+      if (!trunk && y !== undefined && prev !== undefined && prev !== null && Math.abs(y - prev) >= 3) {
+        steps.push(`${d}, ${k} out: ${y > prev ? `rises ${y - prev} blocks (a wall or a cliff face)` : `drops ${prev - y} blocks (a cliff edge or a pit)`}, `
+          + `${found.tops.get(key(x, z)).name} ${frame.relative ? height(y) : `at ${frame.fmt(x, y, z)}`}`);
+      }
+      if (y !== undefined && !trunk) prev = y;
+    }
+    lines.push(`  ${d}: ${heights.join(' ')}`);
+  }
+  lines.splice(lines.length - 4, 0, `Straight out from you, column by column (${frame.relative ? 'blocks above or below you' : 'world y'}):`);
+  if (steps.length) lines.push(`Sudden changes:\n${steps.map((l) => `- ${l}`).join('\n')}`);
+
+  let hi = null;
+  let lo = null;
+  const trees = [];
+  for (const [k, t] of found.tops) {
+    const [x, z] = k.split(',').map(Number);
+    if (TRUNK.test(t.name)) trees.push({ ...t, x, z });
+    if (!hi || t.y > hi.y) hi = { ...t, x, z };
+    if (!lo || t.y < lo.y) lo = { ...t, x, z };
+  }
+  const at = (p) => `${p.name} at ${frame.fmt(p.x, p.y, p.z)}${frame.relative ? '' : ` (${height(p.y)})`}`;
+  if (hi) lines.push(`Highest: ${at(hi)}. Lowest: ${at(lo)}.`);
+  if (trees.length) {
+    const d = (p) => Math.abs(p.x - pose.x) + Math.abs(p.z - pose.z);
+    const near = trees.sort((a, b) => d(a) - d(b)).slice(0, LIST_LIMIT_PER_TYPE);
+    lines.push(`Tree trunks (top of the trunk; leaves aren't seen): ${near.map(at).join('; ')}`
+      + `${trees.length > near.length ? ` (+${trees.length - near.length} more)` : ''}.`);
+  }
   return lines.join('\n');
 }
 
@@ -1098,7 +1547,7 @@ function summarizeScan(scan, mode = 'world', { intro = null, unknownText = (n) =
  * What the map says about the cube of `radius` around the robot, summarized like a scan (Vision
  * keeps the map fresh close to the robot). Used for the model's awareness.
  */
-function mapSummary(world, pose, radius, mode = 'world', intro = null) {
+function mapSummary(world, pose, radius, mode = 'world', intro = null, { grid = false } = {}) {
   const cells = [];
   let known = 0;
   for (let dy = -radius; dy <= radius; dy++) {
@@ -1120,6 +1569,7 @@ function mapSummary(world, pose, radius, mode = 'world', intro = null) {
     mode, {
       intro: intro || `Around you, from your map (Awareness radius ${radius}: ${known} of ${cells.length} blocks known):`,
       unknownText: (n) => `${n} blocks around you haven't been seen yet (scan to see them).`,
+      grid,
     });
 }
 
@@ -1157,12 +1607,19 @@ function sayInChat(bridge, settings, text) {
   return bridge.sendCommand(`tellraw @a ${json}`, { quiet: true });
 }
 
-/** Is this chat message one of the robot's own lines echoing back? */
+/** Is this chat message one of this robot's own lines echoing back? (Other robots' lines look the same.) */
 function isOwnChat(message) {
-  const text = String(message || '');
-  if (/^§b</.test(text)) return true;
-  const plain = text.replace(/§./g, '');
-  return recentlySaid.some((r) => Date.now() - r.time < 30000 && plain.includes(r.text));
+  const plain = String(message || '').replace(/§./g, '');
+  return recentlySaid.some((r) => Date.now() - r.time < 30000 && r.text && plain.includes(r.text));
 }
 
-module.exports = { createToolbox, sayInChat, isOwnChat, summarizeScan, mapSummary };
+/**
+ * A robot's chat line, the way sayInChat writes them ("§b<Name>§r text"), from this robot or any
+ * other player's Ptolemy: { name, text }, or null for anything else.
+ */
+function robotLine(message) {
+  const m = /^§b<([^>§]{1,40})>§r\s?([\s\S]*)$/.exec(String(message || ''));
+  return m ? { name: m[1].trim(), text: m[2].replace(/§./g, '').trim() } : null;
+}
+
+module.exports = { createToolbox, sayInChat, isOwnChat, robotLine, summarizeScan, summarizeSurvey, mapSummary, heightGrid };

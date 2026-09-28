@@ -9,7 +9,9 @@
   const send = (m) => window.ptolemy.send(m);
   const op = (name, fields = {}) => send({ type: 'memory', op: name, ...fields });
 
-  const data = { world: null, status: null, positions: null, pilot: null, wonder: null, endpoints: null };
+  const data = {
+    world: null, status: null, positions: null, pilot: null, wonder: null, endpoints: null, clock: null, settings: null, inventory: null,
+  };
 
   function el(tag, props = {}, ...children) {
     const node = Object.assign(document.createElement(tag), props);
@@ -51,6 +53,14 @@
     return `${Math.round(s / 86400)} d ago`;
   }
 
+  function until(time) {
+    const s = Math.max(0, Math.round((time - Date.now()) / 1000));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.round(s / 60)} min`;
+    if (s < 86400) return `${Math.round(s / 3600)} h`;
+    return `${Math.round(s / 86400)} d`;
+  }
+
   function removeButton(title, fn) {
     const b = el('button', { type: 'button', className: 'icon-btn', textContent: '×', title });
     b.addEventListener('click', fn);
@@ -74,6 +84,62 @@
   const thoughtBody = card('On its mind', 'thoughts');
   const thoughtList = el('ul', { className: 'dash-list' });
   thoughtBody.append(thoughtList, adder('Give it a thought, e.g. "I want to see flowers"', (text) => op('thoughtAdd', { text }), 'Think'));
+
+  // Inventory: 27 slots in three rows of nine, like in the game. Held slots are kept stocked.
+  const invBody = card('Inventory', 'inventory');
+  const invGrid = el('div', { className: 'inv-grid' });
+  const invWhich = el('span', { className: 'inv-which small nowrap' });
+  const invItem = el('input', { type: 'text', placeholder: 'item, e.g. oak_planks', spellcheck: false });
+  const invVariant = el('input', { type: 'number', min: 0, value: 0, className: 'inv-variant', title: 'Variant (data value), for old ids: e.g. wood 1 is spruce wood' });
+  const invHold = el('button', { type: 'button', className: 'btn btn-ghost btn-small', textContent: 'Hold' });
+  const invRelease = el('button', { type: 'button', className: 'btn btn-ghost btn-small', textContent: 'Release' });
+  let invSelected = 1;
+  const hold = () => {
+    const item = invItem.value.trim();
+    if (!item) {
+      window.alert('Type an item id first, e.g. oak_planks.');
+      return;
+    }
+    op('hold', { slot: invSelected, item, data: Number(invVariant.value) || 0 });
+  };
+  invHold.addEventListener('click', hold);
+  invItem.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') hold(); });
+  invRelease.addEventListener('click', () => op('release', { slot: invSelected }));
+  invGrid.title = 'The inventory can\'t be read, only written: a held slot is refilled every second so it never runs out, '
+    + 'and the robot is told what it holds. Release just stops tracking it. Slot 27 is scratch space for give_item. '
+    + 'Click a slot to pick it.';
+  invBody.append(invGrid, el('div', { className: 'adder' }, invWhich, invItem, invVariant, invHold, invRelease));
+
+  function renderInventory() {
+    const inv = data.inventory;
+    invGrid.textContent = '';
+    const held = new Map(((inv && inv.held) || []).map((h) => [h.slot, h]));
+    const scratch = (inv && inv.scratch) || 27;
+    for (let slot = 1; slot <= ((inv && inv.slots) || 27); slot++) {
+      const h = held.get(slot);
+      const b = el('button', {
+        type: 'button',
+        className: `inv-slot${h ? ' held' : ''}${slot === scratch ? ' scratch' : ''}${slot === invSelected ? ' selected' : ''}`,
+        title: slot === scratch ? `Slot ${slot}: scratch space for give_item` : h ? `Slot ${slot}: ${h.item}${h.data ? ` (variant ${h.data})` : ''}, kept stocked` : `Slot ${slot}: unknown`,
+      }, el('span', { className: 'inv-num', textContent: String(slot) }),
+      el('span', { className: 'inv-item', textContent: slot === scratch ? 'temp' : h ? h.item.replace(/^minecraft:/, '').replace(/_/g, ' ') : '' }));
+      if (slot === scratch) b.disabled = true;
+      b.addEventListener('click', () => {
+        invSelected = slot;
+        if (h) {
+          invItem.value = h.item;
+          invVariant.value = h.data || 0;
+        }
+        renderInventory();
+      });
+      invGrid.append(b);
+    }
+    const h = held.get(invSelected);
+    invWhich.textContent = `Slot ${invSelected}`;
+    invRelease.disabled = !h;
+    invHold.textContent = h ? 'Change' : 'Hold';
+  }
+  renderInventory();
 
   const areaBody = card('Areas', 'areas');
   const areaList = el('div', { className: 'area-list' });
@@ -179,10 +245,21 @@
       fact(pl.host ? `${pl.name} (you)` : pl.name, `${pl.x} ${pl.y} ${pl.z}${pl.areas ? ` · in ${pl.areas}` : ''}`);
     }
 
+    const c = data.clock;
+    if (c) {
+      // Worked out from the last reading, like the server does, so it ticks along between readings.
+      const t = Math.floor(c.daytime + (c.running ? ((Date.now() - c.receivedAt) / 1000) * 20 : 0)) % 24000;
+      const minutes = Math.floor((((t + 6000) % 24000) * 1440) / 24000);
+      const hhmm = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+      fact('Game time', `${hhmm}${c.day !== null && c.day !== undefined ? ` · day ${c.day}` : ''}${c.running ? '' : ' · stopped'}`
+        + `${c.weather ? ` · ${c.weather}` : ''}`);
+    }
+
     const pilot = data.pilot;
     if (pilot) {
       const doing = !pilot.running ? 'idle'
-        : `${pilot.source === 'wonder' ? 'wondering' : pilot.source === 'chat' ? 'on a chat request' : 'on a request'} · ${pilot.phase}${pilot.phase === 'tool' ? ` ${pilot.detail}` : ''}`;
+        : `${pilot.source === 'wonder' ? 'wondering' : pilot.source === 'chat' ? 'on a chat request'
+          : pilot.source === 'robot' ? 'talking to a robot' : 'on a request'} · ${pilot.phase}${pilot.phase === 'tool' ? ` ${pilot.detail}` : ''}`;
       fact('Doing', doing);
     }
     if (data.wonder) {
@@ -230,9 +307,11 @@
     }
     if (!w.todos.length) todoList.append(el('li', { className: 'muted', textContent: 'Nothing to do. The LLM writes its plans here too.' }));
 
+    const ttl = data.settings ? data.settings['thoughts.ttl'] : 0;
     for (const t of [...w.thoughts].reverse()) {
+      const fades = ttl > 0 ? ` · fades in ${until(t.time + ttl * 1000)}` : '';
       list(thoughtList, el('li', {}, el('span', { className: 'grow thought', textContent: `“${t.text}”` }),
-        el('span', { className: 'muted small', textContent: ago(t.time) }), removeButton('Let go', () => op('thoughtRemove', { id: t.id }))));
+        el('span', { className: 'muted small', textContent: `${ago(t.time)}${fades}` }), removeButton('Let go', () => op('thoughtRemove', { id: t.id }))));
     }
     if (!w.thoughts.length) thoughtList.append(el('li', { className: 'muted', textContent: 'A clear mind.' }));
 
@@ -263,7 +342,7 @@
 
     const journal = el('ul', { className: 'dash-list journal' });
     for (const j of [...w.journal].reverse().slice(0, 15)) {
-      const src = { ui: 'WebUI', chat: 'chat', wonder: 'wondering' }[j.source] || j.source;
+      const src = { ui: 'WebUI', chat: 'chat', robot: 'a robot', wonder: 'wondering' }[j.source] || j.source;
       journal.append(el('li', {}, el('span', { className: 'muted small nowrap', textContent: `${ago(j.time)} · ${src}` }),
         el('span', { className: 'grow' }, j.request ? el('strong', { textContent: `${j.request} ` }) : null, j.result)));
     }
@@ -293,8 +372,17 @@
       renderNow();
     }
   });
+  on('inventory', (m) => { data.inventory = m; renderInventory(); });
+  on('clock', (c) => { data.clock = c.now ? { ...c.now, receivedAt: Date.now() } : null; renderNow(); });
+  on('settings', (s) => {
+    const ttl = data.settings && data.settings['thoughts.ttl'];
+    data.settings = s.values;
+    if (ttl !== s.values['thoughts.ttl']) renderMemory();
+  });
   on('memoryError', (e) => window.alert(e.message));
-  setInterval(() => { if (data.wonder && data.wonder.nextAt) renderNow(); }, 1000);
+  setInterval(() => { if ((data.wonder && data.wonder.nextAt) || (data.clock && data.clock.running)) renderNow(); }, 1000);
+  setInterval(() => { if (data.settings && data.settings['thoughts.ttl'] > 0) renderMemory(); }, 30000); // "fades in ..."
+
 
   renderMemory();
 
@@ -322,7 +410,7 @@
     const width = root.clientWidth;
     const height = root.parentElement.clientHeight; // .robot-top
     // Grid cells the cards need (the Areas card is two wide).
-    const cells = [...root.children].reduce((n, c) => n + (c.classList.contains('card-areas') ? 2 : 1), 0);
+    const cells = [...root.children].reduce((n, c) => n + (c.classList.contains('card-areas') || c.classList.contains('card-inventory') ? 2 : 1), 0);
     const colsFor = (w) => Math.max(1, Math.floor((width + colGap) / (w + colGap)));
     const rowsFitting = Math.max(1, Math.floor((height + gap) / (min + gap)));
     // Enough columns for the rows that fit, at least as many as the preferred width gives, at most as many as the minimum allows.

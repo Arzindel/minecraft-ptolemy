@@ -26,6 +26,13 @@ game.entities = [
   { id: '-3', name: 'Zombie', pos: { x: agent.x - 4.5, y: agent.y, z: agent.z + 5.5 } },
 ];
 const objectives = new Set(process.env.FAKE_WORLD ? [process.env.FAKE_WORLD] : []);
+const started = Date.now();
+let noAgent = Boolean(process.env.FAKE_NO_AGENT);
+
+/** A PlayerMessage event, as the game sends for chat (and for tellraw lines). */
+function chat(sender, message, type = 'chat') {
+  ws.send(JSON.stringify({ header: { messagePurpose: 'event', eventName: 'PlayerMessage', version: 1 }, body: { sender, message, type } }));
+}
 
 /** querytarget with name=/type=/family= filters, for identifying entities. */
 function filteredTargets(line) {
@@ -48,7 +55,25 @@ async function answer(line) {
     console.log(`Ptolemy marked this world: ${line.split(' ')[3]} (FAKE_WORLD=${line.split(' ')[3]} reopens it)`);
     return { ok: true, body: { statusMessage: 'Added' } };
   }
+  // FAKE_NO_AGENT=1: no agent until Ptolemy runs "agent create" (to try the Create Agent button).
+  if (noAgent && line.startsWith('agent ')) {
+    if (line === 'agent create') noAgent = false;
+    return line === 'agent create' ? { ok: true, body: { statusMessage: 'Agent created' } }
+      : { ok: false, body: { statusCode: -2147352576, statusMessage: 'No agent found for this player' } };
+  }
   if (/^querytarget @e\[.*(name=|type=|family=)/.test(line)) return filteredTargets(line);
+  // The clock runs 20 ticks a second from 1000 (07:00); it rains.
+  const daytime = Math.floor(1000 + (Date.now() - started) / 50) % 24000;
+  if (line === 'time query daytime') return { ok: true, body: { statusMessage: `Daytime is ${daytime}`, data: daytime } };
+  if (line === 'time query day') return { ok: true, body: { statusMessage: 'Day is 12', data: 12 } };
+  if (line === 'weather query') return { ok: true, body: { statusMessage: 'Weather state is: rain' } };
+  if (line.startsWith('tellraw ')) {
+    // The robot's own chat lines come back as chat events, as in the game.
+    const text = JSON.parse(line.slice(line.indexOf('{'))).rawtext.map((r) => r.text).join('');
+    console.log(`[chat] ${text.replace(/§./g, '')}`);
+    setTimeout(() => chat('Arzindel', text, 'tellraw'), 20);
+    return { ok: true, body: { statusMessage: '' } };
+  }
   return game.sendCommand(line);
 }
 
@@ -56,6 +81,23 @@ const ws = new WebSocket(`ws://localhost:${port}`);
 ws.on('open', () => console.log(`Fake game connected to Ptolemy on port ${port}. The robot is at ${agent.x} ${agent.y} ${agent.z}.`));
 ws.on('close', () => { console.log('Ptolemy closed the connection.'); process.exit(0); });
 ws.on('error', (err) => { console.error(`Can't connect to Ptolemy on port ${port}: ${err.message}`); process.exit(1); });
+// Type chat lines here to send them as someone's chat: "Diego: Ptolemy, hi" (a player), or
+// "robot Robo: hey Ptolemy" (another player's robot).
+process.stdin.setEncoding('utf8');
+let pendingInput = '';
+process.stdin.on('data', (piece) => {
+  pendingInput += piece;
+  let at;
+  while ((at = pendingInput.indexOf('\n')) !== -1) {
+    const line = pendingInput.slice(0, at).trim();
+    pendingInput = pendingInput.slice(at + 1);
+    const robot = /^robot (\w+):\s*(.*)$/.exec(line);
+    const person = /^(\w+):\s*(.*)$/.exec(line);
+    if (robot) chat('Diego', `§b<${robot[1]}>§r ${robot[2]}`, 'tellraw');
+    else if (person) chat(person[1], person[2]);
+  }
+});
+
 ws.on('message', async (data) => {
   const msg = JSON.parse(data);
   if (msg.header.messagePurpose !== 'commandRequest') return;

@@ -7,11 +7,39 @@ const path = require('path');
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const FILE = path.join(DATA_DIR, 'settings.json');
 
-const DEFAULT_WONDER_PROMPT = `Nobody has asked you for anything right now. You have a quiet moment: act natural, like a small \
+// The wondering prompt as it was before it mentioned talking to others: a saved copy of it is
+// upgraded to the new default (see `previous` below).
+const OLD_WONDER_PROMPT = `Nobody has asked you for anything right now. You have a quiet moment: act natural, like a small \
 robot living in this world would. Look at what's on your mind and your todo list. You could follow up on one of them, \
 wander a little (stay inside the named areas if there are any), look around with a small scan, have a new thought \
 (add_thought) or let go of an old one, or simply do nothing and enjoy the view. Keep it small: a few actions at most. \
 Don't talk in the game chat unless you have a real reason to. End with one short sentence about what you did or thought.`;
+
+const DEFAULT_WONDER_PROMPT = `Nobody has asked you for anything right now. You have a quiet moment: act natural, like a small \
+robot living in this world would. Look at what's on your mind and your todo list. You could follow up on one of them, \
+wander a little (stay inside the named areas if there are any), look around with a small scan, have a new thought \
+(add_thought) or let go of an old one, or simply do nothing and enjoy the view. Keep it small: a few actions at most. \
+Once in a while (not every time), if someone is around, you may say something in the game chat with send_chat: a word \
+to a player, or to another robot (a robot only hears messages that contain its name). Keep it short and natural, and \
+don't start a conversation every time. End with one short sentence about what you did or thought.`;
+
+const DEFAULT_SHOWER_PROMPT = `Come up with one original "shower thought": a short, surprising, slightly absurd observation \
+about everyday life, games or the world, the kind of thing that pops into your head in the shower. For example: "Why do \
+we still use a floppy disk as the save icon?" Make it new, one sentence, no explanation. Reply with only this JSON and \
+nothing else: {"shower_thought": "..."}`;
+
+const DEFAULT_ADHD_THOUGHTS = [
+  'Why do we use floppy disks as save icons?',
+  'Do squids know they are wet?',
+  'If I break a block and nobody sees it, did it drop anything?',
+  'Is a door just a wall that learned some manners?',
+  'What would a creeper hug feel like?',
+  'I wonder what is under the bedrock.',
+  'Why does nobody ever sit on the chairs they build?',
+  'Are clouds up there solid, or just shy?',
+  'If a torch burns forever, is it ever tired?',
+  'Villagers keep saying "hmm". What do they know?',
+].join('\n');
 
 /**
  * Everything tunable from the Configuration tab (and some console commands), with defaults,
@@ -48,6 +76,9 @@ const SCHEMA = [
         help: 'Older requests are dropped (and their tool results shortened) to keep the conversation under this size. '
           + 'About 4 characters per token: lower it for models with a small context window.' },
       { key: 'llm.toolResultChars', label: 'Max characters per tool result', default: 3000, min: 200, max: 50000, step: 100 },
+      { key: 'llm.scanResultChars', label: 'Max characters per scan result', default: 12000, min: 200, max: 100000, step: 100,
+        help: 'Scans (scan, survey) summarize everything they looked at, however big the radius asked for, so they get '
+          + 'their own, larger limit.' },
       { key: 'llm.instructions', label: 'Extra instructions (every world)', type: 'textarea', default: '',
         help: 'Added to the system prompt in every world. Instructions for one world go on the Dashboard.' },
     ],
@@ -65,6 +96,30 @@ const SCHEMA = [
       { key: 'chat.replies', label: 'Answer chat requests in chat', type: 'boolean', default: true,
         help: 'What the model says while working on a chat request (its "default replies") goes back to the chat. '
           + 'Requests from the WebUI get their replies in the WebUI.' },
+      { key: 'chat.onlyMe', label: 'Only my player can call it', type: 'boolean', default: false,
+        help: 'Ignore chat requests from anyone but the player whose game is connected to this Ptolemy (the name '
+          + 'Minecraft reports with getlocalplayername). Off: every player in the world can call it.' },
+      { key: 'chat.robots', label: 'Listen to other robots', type: 'boolean', default: true,
+        help: 'Other players\' robots (their own Ptolemy) can talk to this one by saying its name in the chat. It can '
+          + 'loop, but both are told to only answer when spoken to by name and to let a goodbye be the end.' },
+      { key: 'chat.robotsInterrupt', label: 'Robots can interrupt wondering', type: 'boolean', default: true,
+        help: 'A robot talking to this one stops its wondering to answer. Robots never interrupt a person\'s request: '
+          + 'they wait their turn.' },
+      { key: 'chat.interruptAlways', label: 'Players can always interrupt', type: 'boolean', default: true,
+        help: 'A player calling the robot in the chat makes it drop whatever it\'s doing and answer, even another request. '
+          + 'Off: only wondering is interrupted; a request waits its turn unless it contains an interrupt word. Requests '
+          + 'from the WebUI never interrupt: they wait their turn (the Stop button is there for that).' },
+      { key: 'chat.interruptWords', label: 'Interrupt words', type: 'text', default: 'hey hey, wait, stop',
+        help: 'Comma-separated, for when "Players can always interrupt" is off. A player calling the robot always '
+          + 'interrupts its wondering; while it works on a request, new ones wait their turn unless they contain one of '
+          + 'these words: then it drops what it\'s doing and answers. "Ptolemy, stop" on its own still just stops.' },
+      { key: 'chat.distractedChance', label: 'Distracted: chance to miss a message (%)', default: 1, min: 0, max: 100, step: 0.5,
+        help: 'A chat message calling the robot (from a player or another robot) is missed this often: it shows in the '
+          + 'transcript as missed, but the model never sees it and nothing is interrupted. Messages with an exception mark '
+          + '(below), a bare "Ptolemy, stop" and anything from the WebUI are never missed. 0: always listens.' },
+      { key: 'chat.distractedExceptions', label: 'Distracted: never miss messages with', type: 'text', default: '!',
+        help: 'Comma-separated marks or words; a message containing any of them always gets through. Default "!": '
+          + '"Ptolemy, come here!" is never missed.' },
     ],
   },
   {
@@ -79,7 +134,30 @@ const SCHEMA = [
       { key: 'wonder.interval', label: 'Idle seconds before wondering', default: 15, min: 5, max: 3600, step: 1,
         help: 'Counted from the last thing the robot or its model did (or from switching wondering on), not rolling.' },
       { key: 'wonder.maxSteps', label: 'Max model calls per wander', default: 6, min: 1, max: 50, step: 1 },
-      { key: 'wonder.prompt', label: 'Wondering prompt', type: 'textarea', default: DEFAULT_WONDER_PROMPT },
+      { key: 'wonder.prompt', label: 'Wondering prompt', type: 'textarea', default: DEFAULT_WONDER_PROMPT,
+        previous: [OLD_WONDER_PROMPT] },
+    ],
+  },
+  {
+    tab: 'automatic',
+    group: 'On its mind',
+    help: 'Thoughts fade with time. Each time wondering starts, Forget and ADHD may kick in (each on its own chance): '
+      + 'Forget wipes every thought for the text below, ADHD puts a random shower thought on top. Both at once: the mind is '
+      + 'wiped and the shower thought takes the place of the forget text.',
+    fields: [
+      { key: 'thoughts.ttl', label: 'Thoughts fade after (seconds)', default: 1800, min: 0, max: 604800, step: 60,
+        help: 'A thought older than this is dropped. 0: they never fade.' },
+      { key: 'thoughts.max', label: 'Most thoughts kept', default: 10, min: 0, max: 100, step: 1,
+        help: 'Beyond this many, the oldest is dropped. 0: no limit (at most 100 are ever kept).' },
+      { key: 'wonder.forgetChance', label: 'Forget: chance per wander (%)', default: 1, min: 0, max: 100, step: 0.1 },
+      { key: 'wonder.forgetText', label: 'Forget: what it thinks instead', type: 'text', default: 'I forgot what I was thinking about' },
+      { key: 'wonder.adhdChance', label: 'ADHD: chance per wander (%)', default: 1, min: 0, max: 100, step: 0.1 },
+      { key: 'wonder.adhdGenerate', label: 'ADHD: ask the model for a new one first', type: 'boolean', default: true,
+        help: 'When ADHD kicks in, first ask the model (no conversation, no tools) for a new shower thought with the '
+          + 'prompt below, and add it to the list. Then one is picked from the list at random.' },
+      { key: 'wonder.adhdThoughts', label: 'ADHD: shower thoughts (one per line)', type: 'textarea', default: DEFAULT_ADHD_THOUGHTS },
+      { key: 'wonder.showerPrompt', label: 'ADHD: shower thought prompt', type: 'textarea', default: DEFAULT_SHOWER_PROMPT,
+        help: 'Sent on its own, without the conversation or tools. The reply must contain {"shower_thought": "..."}.' },
     ],
   },
   {
@@ -127,6 +205,22 @@ const SCHEMA = [
         help: 'The part of the map around the robot it is aware of (3 = 7x7x7), as opposed to the whole map it keeps: the '
           + 'model is told about it with every request (what is next to the robot, the ground, the less common blocks), so '
           + 'it rarely needs to scan. Bigger means a longer prompt. 0: off. The Nanny Cam\'s Awareness filter shows it.' },
+      { key: 'clock.seconds', label: 'Check the time and weather every (seconds)', default: 10, min: 0, max: 600, step: 1,
+        help: 'Reads the game\'s clock and weather (time query, weather query: three commands, never changing anything). '
+          + 'In between, the time is worked out from the last reading. The model is told the time with every request, '
+          + 'and the Dashboard shows it. 0: only when something asks for it.' },
+    ],
+  },
+  {
+    tab: 'robot',
+    group: 'Inventory',
+    help: 'The robot\'s 27 inventory slots can\'t be read, only written (agent setitem). A held slot (Dashboard, #hold, or '
+      + 'the hold tool) is refilled with its item every few seconds, so it never runs out and the model knows what\'s in it.',
+    fields: [
+      { key: 'inventory.refreshSeconds', label: 'Refill held slots every (seconds)', default: 1, min: 0, max: 60, step: 0.5,
+        help: 'One agent setitem per held slot each time. 0: only when a slot is first held.' },
+      { key: 'inventory.amount', label: 'Items put in a held slot', default: 64, min: 1, max: 64, step: 1,
+        help: 'The count setitem puts there each time. It stands for "unlimited": the model isn\'t told the number.' },
     ],
   },
   {
@@ -197,6 +291,10 @@ class Settings extends EventEmitter {
       this._apply(this.values, JSON.parse(fs.readFileSync(FILE, 'utf8')));
     } catch (err) {
       if (err.code !== 'ENOENT') console.warn(`[settings] Ignoring ${FILE}: ${err.message}`);
+    }
+    // A saved copy of an older default text (never edited) follows the new default.
+    for (const field of FIELDS.values()) {
+      if (field.previous && field.previous.includes(this.values[field.key])) this.values[field.key] = field.default;
     }
   }
 
@@ -323,4 +421,4 @@ class Settings extends EventEmitter {
   }
 }
 
-module.exports = { Settings, SCHEMA, DEFAULT_WONDER_PROMPT };
+module.exports = { Settings, SCHEMA, DEFAULT_WONDER_PROMPT, DEFAULT_SHOWER_PROMPT };

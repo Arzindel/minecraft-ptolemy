@@ -66,8 +66,9 @@
       const who = document.createElement('span');
       who.className = 'pilot-who';
       who.textContent = entry.kind === 'user'
-        ? (entry.source === 'chat' ? `${entry.sender || 'Player'} (chat)` : entry.source === 'wonder' ? 'Wondering' : 'You')
-        : entry.kind === 'assistant' ? (entry.source === 'chat' ? `${robotName} → chat` : robotName)
+        ? (entry.source === 'chat' ? `${entry.sender || 'Player'} (chat)` : entry.source === 'robot' ? `${entry.sender || 'A robot'} (robot)`
+          : entry.source === 'wonder' ? 'Wondering' : 'You')
+        : entry.kind === 'assistant' ? (entry.source === 'chat' || entry.source === 'robot' ? `${robotName} → chat` : robotName)
           : entry.kind === 'notice' ? `${robotName} says` : entry.kind === 'error' ? 'Error' : '';
       who.title = time;
       const text = document.createElement('span');
@@ -75,6 +76,12 @@
       // The wondering prompt is long and always the same: show a short stand-in.
       text.textContent = entry.kind === 'user' && entry.source === 'wonder' ? '(idle for a while: act natural)' : entry.text;
       if (entry.kind === 'user' && entry.source === 'wonder') li.classList.add('pilot-wonder');
+      if (entry.kind === 'user' && entry.source === 'robot') li.classList.add('pilot-robot');
+      if (entry.missed) {
+        li.classList.add('pilot-missed');
+        text.textContent = `${entry.text}  (missed: it was distracted)`;
+        li.title = 'Distracted: this message never reached the model (Chat & wondering → Distracted)';
+      }
       if (entry.streaming) li.classList.add('streaming');
       li.append(who, text);
     }
@@ -117,7 +124,7 @@
     if (name !== robotName) {
       robotName = name;
       // Re-label what's already in the transcript.
-      for (const li of items.values()) li.querySelectorAll('.pilot-who').forEach((w) => { w.textContent = w.textContent.replace(/^\S+( → chat| says)?$/, (m, rest) => (/^(You|Error|Wondering)$|\(chat\)/.test(m) ? m : `${robotName}${rest || ''}`)); });
+      for (const li of items.values()) li.querySelectorAll('.pilot-who').forEach((w) => { w.textContent = w.textContent.replace(/^\S+( → chat| says)?$/, (m, rest) => (/^(You|Error|Wondering)$|\((chat|robot)\)/.test(m) ? m : `${robotName}${rest || ''}`)); });
     }
   });
 
@@ -163,6 +170,31 @@
     renderCountdown();
   });
   setInterval(renderCountdown, 500);
+
+  // --- No agent yet: a modal over the panel ---------------------------------------
+  // Only the connected player's own agent counts: `agent getposition` never sees anyone else's.
+
+  const missing = $('agent-missing');
+  const missingDetail = $('agent-missing-detail');
+  let createdAt = 0;
+
+  $('agent-create').addEventListener('click', () => {
+    createdAt = Date.now();
+    missing.hidden = true;
+    window.ptolemy.send({ type: 'memory', op: 'agentCreate' });
+  });
+
+  document.addEventListener('ptolemy:worldStatus', (ev) => {
+    const agent = ev.detail.agent || {};
+    // Right after pressing Create, give the game a moment before showing it again.
+    const waiting = Date.now() - createdAt < 3000;
+    missing.hidden = agent.exists !== false || waiting;
+    missingDetail.textContent = agent.exists === false && createdAt && !waiting
+      ? `Still no agent. The game said: "${agent.message || 'nothing'}". Agents need cheats on (or Education Edition).` : '';
+  });
+  document.addEventListener('ptolemy:status', (ev) => {
+    if (!ev.detail.minecraft || !ev.detail.minecraft.connected) missing.hidden = true;
+  });
 
   stopBtn.addEventListener('click', () => window.ptolemy.send({ type: 'pilotStop' }));
   resetBtn.addEventListener('click', () => window.ptolemy.send({ type: 'pilotReset' }));

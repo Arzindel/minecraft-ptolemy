@@ -2,7 +2,7 @@
 
 const path = require('path');
 const WebSocket = require('ws');
-const { createToolbox, sayInChat, isOwnChat } = require('../tools');
+const { createToolbox, sayInChat, isOwnChat, robotLine } = require('../tools');
 const { Pilot } = require('../llm/pilot');
 const { Wonder } = require('../llm/wonder');
 const { EndpointStore } = require('../llm/endpoints');
@@ -13,8 +13,12 @@ const { McpServer } = require('../mcp/server');
 const { CommandCatalog } = require('../commands');
 const { getAgentPose } = require('../agent/pose');
 const { allPlayers } = require('../agent/players');
+const { Clock, expandPlaceholders } = require('../agent/clock');
+const { Inventory } = require('../agent/inventory');
 
 const POSITION_POLL_MS = 4000;
+// Other robots heard in the chat within this long are named to the model (so it can talk to them).
+const ROBOT_MEMORY_MS = 10 * 60 * 1000;
 
 /**
  * Everything above the robot's body: world detection and memory, the LLM endpoints, the pilot
@@ -30,7 +34,22 @@ class Brain {
     const { bridge, settings } = deps;
 
     this.endpoints = new EndpointStore();
-    this.worlds = new WorldManager({ bridge, log: (text) => this.log(text) });
+    this.worlds = new WorldManager({
+      bridge,
+      log: (text) => this.log(text),
+      thoughtRules: () => ({ ttl: settings.get('thoughts.ttl'), max: settings.get('thoughts.max') }),
+    });
+    // The game's time and weather (read-only), and {time_now}-style placeholders filled in as messages go out.
+    this.clock = new Clock({ bridge });
+    this.clock.on('change', () => this.broadcast(this.clock.message()));
+    const placeholders = (text) => expandPlaceholders(text, { bridge, clock: this.clock });
+    this.robotsHeard = new Map(); // other robots' names -> when they last spoke in the chat
+    // Inventory slots kept stocked with an item (per world), refilled with agent setitem.
+    this.inventory = new Inventory({ bridge, settings, worlds: this.worlds });
+    this.inventory.on('change', () => this.broadcast(this.inventory.message()));
+    settings.on('change', (changed) => {
+      if ('inventory.amount' in changed) this.broadcast(this.inventory.message());
+    });
 
     this.toolbox = createToolbox({
       bridge,
@@ -48,6 +67,9 @@ class Brain {
         if (deps.vision) deps.vision.soon(); // look around after every action
       },
       setWonder: (mode) => this.wonder.setMode(mode),
+      clock: this.clock,
+      placeholders,
+      inventory: this.inventory,
     });
     // Commands tab: editable descriptions of the tools (what the model reads), # and / commands.
     this.commands = new CommandCatalog({ tools: this.toolbox.tools });
@@ -55,9 +77,18 @@ class Brain {
     this.commands.on('change', () => this.broadcast(this.commands.message()));
 
     this.pilot = new Pilot({
-      settings, endpoints: this.endpoints, toolbox: this.toolbox, bridge, worlds: this.worlds, commands: this.commands, map: deps.world,
+      settings,
+      endpoints: this.endpoints,
+      toolbox: this.toolbox,
+      bridge,
+      worlds: this.worlds,
+      commands: this.commands,
+      map: deps.world,
+      clock: this.clock,
+      placeholders,
+      robots: () => this._recentRobots(),
     });
-    this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds });
+    this.wonder = new Wonder({ settings, pilot: this.pilot, bridge, worlds: this.worlds, endpoints: this.endpoints });
     this.mcp = new McpServer({ toolbox: this.toolbox, settings, bridge, worlds: this.worlds, commands: this.commands });
 
     this.pilot.on('entry', (entry) => this.broadcast({ type: 'pilotEntry', entry }));
@@ -65,7 +96,7 @@ class Brain {
     this.pilot.on('state', (state) => this.broadcast(state));
     // "Default replies": what the model says goes back to where the request came from.
     this.pilot.on('say', ({ text, source }) => {
-      if (source === 'chat' && settings.get('chat.replies')) sayInChat(bridge, settings, text);
+      if ((source === 'chat' || source === 'robot') && settings.get('chat.replies')) sayInChat(bridge, settings, text);
     });
     this.wonder.on('state', (state) => this.broadcast(state));
     this.endpoints.on('change', () => {
@@ -86,6 +117,7 @@ class Brain {
       this.broadcast(settings.message());
       this._broadcastMemory();
       this.broadcast(this.worlds.status());
+      this.broadcast(this.inventory.message());
     });
     this.worlds.on('memory', () => this._broadcastMemory());
     this.worlds.on('status', () => {
@@ -110,6 +142,9 @@ class Brain {
     this.positions = null;
     this._poll = setInterval(() => this._pollPositions(), POSITION_POLL_MS);
     this._poll.unref();
+    this._clockAt = 0;
+    this._clockTimer = setInterval(() => this._tickClock(), 1000);
+    this._clockTimer.unref();
   }
 
   /** Messages a newly opened page needs. */
@@ -120,6 +155,8 @@ class Brain {
       { type: 'pilotTranscript', entries: this.pilot.transcript },
       this.pilot.state(),
       this.wonder.state(),
+      this.clock.message(),
+      this.inventory.message(),
       this.worlds.status(),
       this._memoryMessage(),
       this.positions,
@@ -137,29 +174,100 @@ class Brain {
   /**
    * A chat message is a request when it contains the wake word ("Ptolemy") and not the ignore
    * word ("Ptoless", for talking about the robot without calling it). "Ptolemy, stop" stops it.
+   * Lines from other players' robots count too (if allowed), but can't stop or interrupt a request.
    */
   chat(sender, message, type) {
     const { settings } = this;
-    if (!settings.get('chat.enabled') || typeof message !== 'string') return;
-    if (isOwnChat(message) || /^tellraw$/i.test(type || '')) return;
+    if (typeof message !== 'string' || isOwnChat(message)) return;
     const name = (settings.get('chat.name') || '').trim();
-    const ignore = (settings.get('chat.ignore') || '').trim();
-    if (!name) return;
-    if (!new RegExp(`\\b${escapeRe(name)}\\b`, 'i').test(message)) return;
-    if (ignore && message.toLowerCase().includes(ignore.toLowerCase())) return;
+    const robot = robotLine(message);
+    if (robot) {
+      // A line signed with this robot's own name is taken as its own (an echo that came late), so it can
+      // never answer itself; another robot with the same name can't be told apart anyway.
+      if (robot.name.toLowerCase() === name.toLowerCase()) {
+        if (!this._sameNameWarned && !(sender && sender === this.bridge.player)) {
+          this._sameNameWarned = true;
+          this.log(`A chat line signed "${robot.name}" wasn't this robot's. If another player's robot is also called `
+            + `${robot.name}, give one of them a different name (set_name, or the Wake word setting) so they can talk.`);
+        }
+        return;
+      }
+      this.robotsHeard.set(robot.name, Date.now());
+      if (settings.get('chat.enabled') && settings.get('chat.robots')) this._robotChat(robot);
+      return;
+    }
+    if (!settings.get('chat.enabled') || /^tellraw$/i.test(type || '')) return;
+    if (!name || !this._callsMe(message)) return;
 
+    const me = this.bridge.player;
+    if (settings.get('chat.onlyMe') && me && sender !== me) {
+      this.log(`Ignored ${sender}'s chat request: only ${me} can call ${name} ("Only my player can call it" is on).`);
+      return;
+    }
     const rest = message.replace(new RegExp(`[@!]?\\b${escapeRe(name)}\\b[\\s,:;!.?-]*`, 'ig'), ' ').trim();
     const reply = (text) => settings.get('chat.replies') && sayInChat(this.bridge, settings, text);
     if (/^(stop|halt|cancel|enough)[.!]*$/i.test(rest)) {
       reply(this.pilot.stop() ? 'Stopping.' : 'I wasn\'t doing anything.');
       return;
     }
+    if (this._distracted(message, sender)) return;
     if (!rest) {
       reply(`Yes? Say "${name}, <what to do>".`);
       return;
     }
     this.wonder.personRequested();
-    this.pilot.send(message, { source: 'chat', sender });
+    this.pilot.send(message, { source: 'chat', sender, interrupt: this._personInterrupt(rest) });
+  }
+
+  /** How far a person's request may cut in: anything, or only wondering (see chat.interruptAlways / interruptWords). */
+  _personInterrupt(text) {
+    if (this.settings.get('chat.interruptAlways')) return 'any';
+    const words = String(this.settings.get('chat.interruptWords') || '').split(',').map((w) => w.trim()).filter(Boolean);
+    return words.some((w) => new RegExp(`(^|[^\\w])${escapeRe(w)}([^\\w]|$)`, 'i').test(text)) ? 'any' : 'wonder';
+  }
+
+  /** Does this text call the robot by name (and not contain the ignore word)? */
+  _callsMe(text) {
+    const name = (this.settings.get('chat.name') || '').trim();
+    const ignore = (this.settings.get('chat.ignore') || '').trim();
+    if (!name || !new RegExp(`\\b${escapeRe(name)}\\b`, 'i').test(text)) return false;
+    return !(ignore && text.toLowerCase().includes(ignore.toLowerCase()));
+  }
+
+  /**
+   * Distracted: a chat message calling the robot is missed now and then (chat.distractedChance), unless
+   * it has an exception mark ("!"). It goes in the transcript as missed; the model never sees it.
+   */
+  _distracted(text, sender) {
+    const chance = this.settings.get('chat.distractedChance');
+    if (!(chance > 0)) return false;
+    const marks = String(this.settings.get('chat.distractedExceptions') || '').split(',').map((m) => m.trim()).filter(Boolean);
+    if (marks.some((m) => text.toLowerCase().includes(m.toLowerCase()))) return false;
+    if (Math.random() * 100 >= chance) return false;
+    this.pilot.missed(text, sender);
+    return true;
+  }
+
+  /** Another robot said something in the chat: a request if it said this robot's name. */
+  _robotChat(robot) {
+    if (!this._callsMe(robot.text)) return;
+    if (this._distracted(robot.text, `${robot.name} (robot)`)) return;
+    this.pilot.send(robot.text, {
+      source: 'robot', sender: robot.name, interrupt: this.settings.get('chat.robotsInterrupt') ? 'wonder' : false,
+    });
+  }
+
+  /** Other robots heard in the chat lately, most recent first. */
+  _recentRobots() {
+    const now = Date.now();
+    return [...this.robotsHeard.entries()].filter(([, t]) => now - t < ROBOT_MEMORY_MS).sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  }
+
+  _tickClock() {
+    const every = this.settings.get('clock.seconds');
+    if (!every || !this.bridge.connected || Date.now() - this._clockAt < every * 1000) return;
+    this._clockAt = Date.now();
+    this.clock.refresh().catch(() => {});
   }
 
   // --- UI messages -----------------------------------------------------------------
@@ -170,8 +278,9 @@ class Brain {
     const e = this.endpoints;
     switch (msg.type) {
       case 'pilotSend':
+        // The WebUI never interrupts (it has a Stop button): its requests wait their turn.
         this.wonder.personRequested();
-        this.pilot.send(msg.text, { source: 'ui' });
+        this.pilot.send(msg.text, { source: 'ui', interrupt: false });
         return true;
       case 'pilotStop':
         this.pilot.stop();
@@ -253,6 +362,16 @@ class Brain {
         await this.bridge.sendCommand('agent create');
         await w.checkAgent();
         return;
+      case 'hold': {
+        const h = await this.inventory.hold(msg.slot, msg.item, msg.data || 0);
+        this.log(`Slot ${h.slot} now holds ${h.item}${h.data ? ` (variant ${h.data})` : ''}, kept stocked.`);
+        return;
+      }
+      case 'release': {
+        const old = this.inventory.release(msg.slot);
+        if (old) this.log(`Slot ${old.slot} is no longer kept stocked with ${old.item}.`);
+        return;
+      }
       case 'toDefaults':
         this.settings.worldToDefaults();
         this.log('This world\'s robot & path settings are now the defaults for new worlds.');
@@ -288,16 +407,23 @@ class Brain {
 
   // --- Console commands ----------------------------------------------------------
 
-  /** #area, #boundary, #world, #wonder, #ask, #endpoint. Returns true if handled. */
+  /** #area, #boundary, #world, #wonder, #ask, the block and inventory commands. Returns true if handled. */
   console(name, args, text) {
     const say = (line) => this.log(line);
     const m = this.worlds.current;
+    const tool = CONSOLE_TOOLS[name];
+    if (tool) {
+      const parsed = tool.parse(args);
+      if (!parsed) say(`Usage: #${name} ${tool.usage}`);
+      else this.toolbox.call(tool.name, parsed, { origin: 'Console' }).then((res) => say(res.text));
+      return true;
+    }
     switch (name) {
       case 'ask':
         if (!args.length) say('Usage: #ask <request for the LLM>');
         else {
           this.wonder.personRequested();
-          this.pilot.send(text.replace(/^\S+\s*/, ''), { source: 'ui' });
+          this.pilot.send(text.replace(/^\S+\s*/, ''), { source: 'ui', interrupt: false });
         }
         return true;
       case 'wonder':
@@ -395,10 +521,50 @@ class Brain {
 
   close() {
     clearInterval(this._poll);
+    clearInterval(this._clockTimer);
+    this.inventory.close();
     this.wonder.close();
     if (this.worlds.current) this.worlds.current.save();
   }
 }
+
+// Console commands that run a tool: #name args → the tool, with arguments parsed from the words.
+const DIRS = ['forward', 'back', 'left', 'right', 'up', 'down'];
+const isInt = (v) => /^\d+$/.test(v || '');
+const isDir = (v) => DIRS.includes(String(v || '').toLowerCase());
+const CONSOLE_TOOLS = {
+  safe_destroy: {
+    name: 'safe_destroy', usage: '<block> <direction>',
+    parse: ([block, dir]) => (block && isDir(dir) ? { block, direction: dir.toLowerCase() } : null),
+  },
+  replace: {
+    name: 'replace', usage: '<slot> <direction>',
+    parse: ([slot, dir]) => (isInt(slot) && isDir(dir) ? { slot: Number(slot), direction: dir.toLowerCase() } : null),
+  },
+  safe_replace: {
+    name: 'safe_replace', usage: '<block> <slot> <direction>',
+    parse: ([block, slot, dir]) => (block && isInt(slot) && isDir(dir) ? { block, slot: Number(slot), direction: dir.toLowerCase() } : null),
+  },
+  hold: {
+    name: 'hold', usage: '<slot 1-26> <item> [variant]',
+    parse: ([slot, item, variant]) => (isInt(slot) && item && (variant === undefined || isInt(variant))
+      ? { slot: Number(slot), item, variant: Number(variant || 0) } : null),
+  },
+  release: { name: 'release', usage: '<slot 1-26>', parse: ([slot]) => (isInt(slot) ? { slot: Number(slot) } : null) },
+  drop_inv: {
+    name: 'drop', usage: '<slot> [amount] [direction]',
+    parse: ([slot, amount, dir]) => {
+      if (!isInt(slot) || (amount !== undefined && !isInt(amount) && !isDir(amount)) || (dir !== undefined && !isDir(dir))) return null;
+      const direction = isDir(amount) ? amount : dir;
+      return { slot: Number(slot), quantity: isInt(amount) ? Number(amount) : 1, direction: (direction || 'forward').toLowerCase() };
+    },
+  },
+  give_item: {
+    name: 'give_item', usage: '<item> [amount] [variant]',
+    parse: ([item, amount, variant]) => (item && (amount === undefined || isInt(amount)) && (variant === undefined || isInt(variant))
+      ? { item, amount: Number(amount || 1), variant: Number(variant || 0) } : null),
+  },
+};
 
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -39,6 +39,7 @@
       <button class="tab" role="tab" data-tab="robot" aria-selected="true">Robot</button>
       <button class="tab" role="tab" data-tab="commands" aria-selected="false">Commands</button>
       <button class="tab" role="tab" data-tab="config" aria-selected="false">Configuration</button>
+      <button class="tab" role="tab" data-tab="tutorial" aria-selected="false">Tutorial</button>
     </nav>
 
     <div class="tab-panel robot-panel" data-panel="robot">
@@ -88,6 +89,14 @@
             <button class="btn btn-ghost btn-small" id="pilot-reset" type="button" title="Forget the conversation">New conversation</button>
           </div>
           <ol class="pilot-log" id="pilot-log" aria-live="polite"></ol>
+          <div class="pilot-overlay" id="agent-missing" hidden>
+            <div class="pilot-modal" role="dialog" aria-labelledby="agent-missing-title">
+              <p id="agent-missing-title"><strong>You don't have a robot in this world yet.</strong></p>
+              <p class="muted small">Every player gets one agent of their own (other players' agents don't count). Create yours and Ptolemy takes it from there.</p>
+              <button class="btn btn-primary" id="agent-create" type="button">Create Agent</button>
+              <p class="muted small" id="agent-missing-detail"></p>
+            </div>
+          </div>
           <form class="command-form pilot-form" id="pilot-form" autocomplete="off">
             <textarea id="pilot-input" rows="2" placeholder="Tell the robot what to do, e.g. &quot;come to me&quot; or &quot;dig a 3x3 hole in front of you&quot;"></textarea>
             <button class="btn btn-primary" type="submit">Send</button>
@@ -122,7 +131,7 @@
               <button type="button" data-filter="vision" role="radio" aria-checked="false" title="Colour only what Vision looked at last (it follows the robot, and looks ahead while walking); the rest in grey">Vision</button>
             </div>
             <label class="cam-control" title="How many blocks around the robot to show">
-              Zoom <input type="range" id="cam-radius" min="1" max="30" value="15">
+              Zoom <input type="range" id="cam-radius" min="1" max="100" value="15">
               <span id="cam-radius-value">15</span>
             </label>
             <label class="cam-control" title="How far around the robot to scan, in the same units as Zoom">
@@ -176,6 +185,18 @@
         </div>
       
     </div>
+    <div class="tab-panel" data-panel="tutorial" hidden>
+      <div class="config tutorial">
+        <div class="console-toolbar">
+          <span class="console-title">Tutorial</span>
+          <span class="muted small">How Ptolemy works, and what every setting does.</span>
+        </div>
+        <div class="tutorial-layout">
+          <nav class="tutorial-toc" id="tutorial-toc" aria-label="Contents"></nav>
+          <div class="tutorial-body" id="tutorial-body"></div>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script src="app.js"></script>
@@ -186,5 +207,6 @@
   <script src="endpoints.js"></script>
   <script src="dashboard.js"></script>
   <script src="commands.js"></script>
+  <script src="tutorial.js"></script>
 </body>
 </html>

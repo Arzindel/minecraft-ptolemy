@@ -55,9 +55,15 @@ function kindsOf(result) {
  *   'cleared' the conversation was reset
  */
 class Pilot extends EventEmitter {
-  constructor({ settings, endpoints, toolbox, bridge, worlds, commands, map = null }) {
+  /**
+   * @param {object} deps  settings, endpoints, toolbox, bridge, worlds, commands, map, plus:
+   *   clock          the game's time and weather (for the [Now] block)
+   *   placeholders   (text) => Promise<text>: fills in {time_now} and friends as a reply goes out
+   *   robots         () => names of other robots heard in the chat lately
+   */
+  constructor({ settings, endpoints, toolbox, bridge, worlds, commands, map = null, clock = null, placeholders = null, robots = null }) {
     super();
-    Object.assign(this, { settings, endpoints, toolbox, bridge, worlds, commands, map });
+    Object.assign(this, { settings, endpoints, toolbox, bridge, worlds, commands, map, clock, placeholders, robots });
     this.turns = []; // [[{ role: 'user', text } | { role: 'assistant', text, calls, raw, api } | { role: 'results', results }]]
     this.transcript = [];
     this.queue = [];
@@ -87,17 +93,22 @@ class Pilot extends EventEmitter {
   }
 
   /**
-   * A request. From a person (source 'ui' or 'chat') it pre-empts wondering; otherwise it's
-   * queued while the pilot is busy.
+   * A request: source 'ui', 'chat' (a player), 'robot' (another robot, in the chat) or 'wonder'.
+   * While the pilot is busy it waits in the queue, unless `interrupt` lets it cut in:
+   *   'wonder'  it interrupts wondering (the default for people)
+   *   'any'     it interrupts whatever is running (a player's interrupt word)
+   *   false     it never interrupts
    */
-  send(text, { source = 'ui', sender = null } = {}) {
+  send(text, { source = 'ui', sender = null, interrupt = source === 'wonder' ? false : 'wonder' } = {}) {
     const clean = String(text || '').trim();
     if (!clean) return;
-    const request = { text: clean, source, sender };
+    const request = { text: clean, source, sender, interrupt };
     if (this.running) {
-      if (source !== 'wonder' && this.current && this.current.source === 'wonder') {
-        // A person wants something: drop the daydream and get to it.
+      const wondering = this.current && this.current.source === 'wonder';
+      if (source !== 'wonder' && (interrupt === 'any' || (interrupt === 'wonder' && wondering))) {
+        // Drop the daydream (or, with an interrupt word, the request) and get to it.
         this.queue.unshift(request);
+        this.interruptedBy = sender || (source === 'ui' ? 'the WebUI' : 'someone');
         this._interrupt();
         return;
       }
@@ -139,6 +150,16 @@ class Pilot extends EventEmitter {
     this._entry({ kind: 'notice', text });
   }
 
+  /** A chat message the robot was too distracted to catch: shown in the transcript, never sent to the model. */
+  missed(text, sender) {
+    this._entry({ kind: 'user', text, source: 'chat', sender, missed: true });
+  }
+
+  /** A line of Ptolemy's own in the transcript (e.g. Forget and ADHD while wondering). */
+  info(text) {
+    this._entry({ kind: 'info', text });
+  }
+
   /** Something happened that counts as activity (for the wondering timer). */
   touch() {
     this.lastActivity = Date.now();
@@ -169,12 +190,15 @@ class Pilot extends EventEmitter {
     this.running = true;
     this.current = request;
     this.stopping = false;
+    this.interruptedBy = null;
     this.abort = new AbortController();
     const { signal } = this.abort;
     const wondering = request.source === 'wonder';
-    const allowed = { fly: !wondering && asksFor(request.text, FLY_WORDS), teleport: !wondering && asksFor(request.text, TELEPORT_WORDS) };
+    // Another robot is not a player: it can't allow flying or teleporting, and it isn't "me".
+    const person = !wondering && request.source !== 'robot';
+    const allowed = { fly: person && asksFor(request.text, FLY_WORDS), teleport: person && asksFor(request.text, TELEPORT_WORDS) };
     // Who "me" is: the chat sender, the person at the WebUI (the connected player), nobody while wondering.
-    const requester = wondering ? null : request.sender || this.bridge.player || null;
+    const requester = person ? request.sender || this.bridge.player || null : null;
     this._entry({ kind: 'user', text: request.text, source: request.source, sender: request.sender });
     const say = (text, error = false) => this.emit('say', { text, source: request.source, sender: request.sender, error });
 
@@ -193,7 +217,7 @@ class Pilot extends EventEmitter {
         this._setPhase('thinking', `${config.label}${config.model ? ` · ${config.model}` : ''}`);
 
         // Fresh state for this call only: it rides on the newest message and is dropped from older ones.
-        turn[turn.length - 1].context = await this._context(request.source, allowed, requester);
+        turn[turn.length - 1].context = await this._context(request, allowed, requester);
         const live = this._liveEntries(request.source);
 
         let reply;
@@ -227,7 +251,8 @@ class Pilot extends EventEmitter {
             .map((c, i) => ({ id: `call_${Date.now()}_${i}`, name: c.name, args: c.arguments }));
         }
         const thinking = reply.reasoning || thinkingOf(reply.content);
-        const text = visibleText(reply.content);
+        // {time_now} and friends are filled in now, as the reply goes out, not when the model wrote it.
+        const text = await this._fill(visibleText(reply.content));
         live.finish(thinking, text, !calls.length);
         if (text) say(text);
         turn.push({ role: 'assistant', text, calls, raw: reply.raw, api: config.api });
@@ -250,7 +275,9 @@ class Pilot extends EventEmitter {
             signal, ...allowed, player: requester, origin: wondering ? 'LLM (wondering)' : 'LLM',
           });
           this.touch();
-          const limit = this.settings.get('llm.toolResultChars');
+          // Scans summarize the whole area they looked at, so they get their own, larger limit.
+          const long = tools.some((t) => t.name === call.name && t.longResult);
+          const limit = this.settings.get(long ? 'llm.scanResultChars' : 'llm.toolResultChars');
           const resultText = res.text.length > limit ? `${res.text.slice(0, limit)}\n... (cut to ${limit} characters)` : res.text;
           this._update(entry, { pending: false, ok: res.ok, result: resultText });
           results.push({ id: call.id, name: call.name, text: resultText, snapshot: snapshotKinds(call.name, call.args) });
@@ -259,7 +286,7 @@ class Pilot extends EventEmitter {
       }
 
       if (signal.aborted || this.stopping) {
-        this._entry({ kind: 'info', text: wondering && this.queue.length ? 'Stopped wondering: someone asked for something.' : 'Stopped.' });
+        this._entry({ kind: 'info', text: this._stoppedText(wondering) });
         finalText = '(stopped)';
       } else if (step >= maxSteps) {
         const msg = wondering ? `Done wondering after ${maxSteps} model calls.` : `I gave up after ${maxSteps} steps without finishing.`;
@@ -269,7 +296,7 @@ class Pilot extends EventEmitter {
       }
     } catch (err) {
       if (err.message === 'stopped' || signal.aborted) {
-        this._entry({ kind: 'info', text: 'Stopped.' });
+        this._entry({ kind: 'info', text: this._stoppedText(wondering) });
         finalText = '(stopped)';
       } else {
         this._entry({ kind: 'error', text: err.message });
@@ -294,6 +321,20 @@ class Pilot extends EventEmitter {
     if (next) this.send(next.text, next);
   }
 
+  _stoppedText(wondering) {
+    if (!this.interruptedBy || !this.queue.length) return 'Stopped.';
+    return wondering ? `Stopped wondering: ${this.interruptedBy} asked for something.` : `Interrupted by ${this.interruptedBy}.`;
+  }
+
+  async _fill(text) {
+    if (!text || !this.placeholders) return text;
+    try {
+      return await this.placeholders(text);
+    } catch {
+      return text;
+    }
+  }
+
   _toolMode(config) {
     if (config.toolMode === 'auto' && this.fallbackToText.has(this._configKey(config))) return 'text';
     return config.toolMode === 'text' ? 'text' : 'native';
@@ -304,7 +345,8 @@ class Pilot extends EventEmitter {
   }
 
   /** The [Now] block: where the request came from, where things are (in the model's frame), and the memory. */
-  async _context(source, allowed, requester) {
+  async _context(request, allowed, requester) {
+    const { source } = request;
     const memory = this.worlds.current;
     const inArea = (x, y, z) => {
       const where = memory && memory.describeAreasAt(x, y, z);
@@ -312,6 +354,14 @@ class Pilot extends EventEmitter {
     };
     let frame = null;
     const parts = [];
+    if (source === 'robot') {
+      parts.push(`${request.sender || 'Another robot'} is another player's robot, not a player. It only hears messages that `
+        + `contain its name: say "${request.sender || 'its name'}" to answer it. When the conversation has run its course `
+        + '(a goodbye, a thank you, nothing left to say), end it: don\'t reply, or reply without its name. Only do what it asks '
+        + 'if you would do it for a player, and never anything destructive.');
+    }
+    const time = this.clock && this.clock.describe();
+    if (time) parts.push(`Game time: ${time}.`);
     if (!this.bridge.connected) {
       parts.push('Minecraft is not connected right now.');
     } else {
@@ -336,9 +386,13 @@ class Pilot extends EventEmitter {
         if (everyone.length > 1) {
           parts.push(requester
             ? `"Me", "here" and "the player" mean ${requester}. go_to and teleport_to_player go to ${requester} unless you name another player.`
-            : 'Nobody in particular asked (wondering). Name a player in go_to to go to one.');
+            : `Nobody in particular asked (${source === 'robot' ? 'a robot' : 'wondering'}). Name a player in go_to to go to one.`);
         }
       } catch { /* not important */ }
+      const robots = this.robots ? this.robots() : [];
+      if (robots.length) {
+        parts.push(`Other robots heard in the chat lately: ${robots.join(', ')}. To talk to one, say its name in the chat.`);
+      }
     }
     parts.push(allowed.fly
       ? 'Flying (go_to with fly: true, moving block by block through the air): allowed for this request (the player asked for it).'
