@@ -53,7 +53,7 @@ class Wonder extends EventEmitter {
   /** Why it isn't counting down right now, or null. */
   blocker() {
     if (!this.bridge.connected) return 'Minecraft isn\'t connected';
-    if (this.worlds.agent.exists === false) return 'there\'s no agent in this world yet';
+    if (this.worlds.agent.exists !== true) return 'there\'s no agent in this world yet';
     if (this.preparing) return 'its mind is wandering';
     if (this.pilot.running) return this.pilot.current && this.pilot.current.source === 'wonder' ? 'wondering now' : 'busy with a request';
     return null;

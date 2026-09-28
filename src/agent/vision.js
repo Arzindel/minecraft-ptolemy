@@ -27,10 +27,11 @@ class Vision extends EventEmitter {
    * @param {import('../world/map').WorldMap} deps.world
    * @param {import('../settings').Settings} deps.settings
    * @param {() => boolean} [deps.busy]   true while something else looks as it goes (a walk)
+   * @param {() => boolean} [deps.enabled]   false while there's no agent: looking asks where it is, which would create one
    */
-  constructor({ bridge, world, settings, busy = () => false }) {
+  constructor({ bridge, world, settings, busy = () => false, enabled = () => true }) {
     super();
-    Object.assign(this, { bridge, world, settings, busy });
+    Object.assign(this, { bridge, world, settings, busy, enabled });
     this.last = null; // { center, radius, robot, time } of the latest look
     this.robot = null; // the robot's latest known pose
     this.identities = new Map(); // entity uniqueId -> { name, type, hostile, player, item } | { hidden: true }
@@ -100,7 +101,7 @@ class Vision extends EventEmitter {
   }
 
   async _tick() {
-    if (!this.bridge.connected || this.looking || this.busy()) return;
+    if (!this.bridge.connected || this.looking || this.busy() || !this.enabled()) return;
     const idle = this.settings.get('vision.idleSeconds') * 1000;
     const due = this._soon || (idle > 0 && (!this.last || Date.now() - this.last.time >= idle));
     if (!due) return;

@@ -362,10 +362,13 @@ class Pilot extends EventEmitter {
     }
     const time = this.clock && this.clock.describe();
     if (time) parts.push(`Game time: ${time}.`);
+    const noAgent = this.bridge.connected && this.worlds.agent.exists !== true;
     if (!this.bridge.connected) {
       parts.push('Minecraft is not connected right now.');
     } else {
       try {
+        // No agent yet: don't ask where it is (any agent command would create it).
+        if (noAgent) throw new Error('no agent');
         const pose = await getAgentPose(this.bridge);
         frame = new Frame(pose, this.settings.get('llm.coordinates'));
         parts.push(`Robot: ${frame.here()}${inArea(pose.x, pose.y, pose.z)}.`);
@@ -373,7 +376,10 @@ class Pilot extends EventEmitter {
         const r = this.settings.get('awareness.radius');
         if (this.map && r > 0) parts.push(mapSummary(this.map, pose, r, this.settings.get('llm.coordinates')));
       } catch {
-        parts.push('Robot: position unknown (there may be no agent in this world yet; run_command "agent create" makes one).');
+        parts.push(noAgent
+          ? 'Robot: there is no robot (agent) in this world yet. The player creates it with the Create Agent button in the WebUI; '
+            + 'until then you can talk and use your memory, but not act in the world.'
+          : 'Robot: position unknown right now.');
       }
       try {
         const everyone = await allPlayers(this.bridge);

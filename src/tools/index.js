@@ -140,10 +140,12 @@ const POSITION = {
  * @param {import('../agent/clock').Clock} [deps.clock]   the game's time and weather
  * @param {(text: string) => Promise<string>} [deps.placeholders]   fills in {time_now} and friends
  * @param {import('../agent/inventory').Inventory} [deps.inventory]   held inventory slots
+ * @param {() => boolean} [deps.agentReady]   false while the player has no agent: then the tools that act in the
+ *   world are refused, since any agent command would make the game create one
  */
 function createToolbox({
   bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder, clock = null,
-  placeholders = async (text) => text, inventory = null,
+  placeholders = async (text) => text, inventory = null, agentReady = () => true,
 }) {
   const memory = () => {
     if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
@@ -1301,6 +1303,10 @@ function createToolbox({
     }
     log(`${origin} → ${name} ${JSON.stringify(args || {})}`);
     if (!bridge.connected && !tool.offline) return { ok: false, text: 'Minecraft is not connected, so the robot can\'t do anything right now.' };
+    if (!tool.offline && !agentReady()) {
+      return { ok: false, text: 'There is no robot (agent) in this world yet, so you can\'t do anything in the world. The player creates '
+        + 'it with the Create Agent button in the Ptolemy WebUI. Tell them so; don\'t try to create it yourself.' };
+    }
     try {
       const text = await tool.run(args || {}, { signal });
       return { ok: true, text: String(text) };
