@@ -90,7 +90,8 @@ Then:
    command in the WebUI to see the addresses.)
 3. The header switches to **Connected as &lt;your name&gt;**. If you don't have an agent in this world yet, a
    **Create Agent** box covers the Automatic panel: press it.
-4. Pick an LLM under **Configuration → LLM**, then talk to the robot in the Automatic panel or the game
+4. Pick an LLM under **Configuration → LLM** (NVIDIA Build with `google/gemma-4-31b-it` is the default and
+   recommended: paste an nvapi key into its card), then talk to the robot in the Automatic panel or the game
    chat ("Ptolemy, come here"). The **Tutorial** tab explains everything else.
 
 The Manual console takes game commands directly, e.g.
@@ -158,7 +159,7 @@ dashboard's Selected response card.
 | --- | --- | --- |
 | `PTOLEMY_UI_PORT` | `3000` | Port for the WebUI (HTTP and its own WebSocket at `/ui`) |
 | `PTOLEMY_MC_PORT` | `8080` | Port Minecraft connects to with `/connect` |
-| `NVIDIA_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | | Used by those endpoints when no key is saved for them |
+| `NVIDIA_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` | | Used by those endpoints when no key is saved for them |
 | `PTOLEMY_KEY_<ENDPOINT>` | | Where each endpoint's saved key lives, in `.env` (e.g. `PTOLEMY_KEY_NVIDIA`) |
 | `PTOLEMY_MCP_URL` | `http://localhost:$PTOLEMY_UI_PORT/mcp` | Where `npm run mcp` relays to |
 
@@ -445,17 +446,22 @@ including after `run` in an `execute` chain. Commands run as the connected playe
 
 ### Endpoints
 
-**Configuration → LLM** has a card for each endpoint: LM Studio, text-generation-webui (oobabooga),
-NVIDIA Build, OpenAI and Anthropic to begin with. You can add more with **Add endpoint**, for example
-for Ollama, llama.cpp, vLLM, or a second LM Studio on another PC. The one marked **In use** drives
-Automatic mode.
+**Configuration → LLM** has a card for each endpoint: NVIDIA Build (in use to begin with), LM Studio,
+text-generation-webui (oobabooga), OpenAI, Google Gemini and Anthropic. You can add more with **Add
+endpoint**, for example for Ollama, llama.cpp, vLLM, or a second LM Studio on another PC. The one marked
+**In use** drives Automatic mode.
+
+**Recommended:** NVIDIA Build with **`google/gemma-4-31b-it`**, the default there. It's what Ptolemy was
+tested with, it calls tools reliably, and a free nvapi key gets you started. If the model name doesn't
+match NVIDIA's list exactly, press ↻ on the card and pick it from there.
 
 | Endpoint | Setup | Defaults |
 | --- | --- | --- |
 | **LM Studio** | Load a model and start the server (Developer tab, or `lms server start`). Models with the 🔨 tool-use badge work best | `http://localhost:1234/v1`, model empty = the first one listed, tools: Auto |
 | **text-generation-webui** | Start it with `--api` and load a model in its UI | `http://localhost:5000/v1`, model empty = whatever is loaded, tools: Text |
-| **NVIDIA Build** | An `nvapi-...` key from [build.nvidia.com](https://build.nvidia.com) | `https://integrate.api.nvidia.com/v1`, `meta/llama-3.3-70b-instruct`, tools: Auto |
+| **NVIDIA Build** (the default) | An `nvapi-...` key from [build.nvidia.com](https://build.nvidia.com) | `https://integrate.api.nvidia.com/v1`, `google/gemma-4-31b-it` (recommended), tools: Auto |
 | **OpenAI** | A key from platform.openai.com; press ↻ and pick a model | `https://api.openai.com/v1`, tools: Native |
+| **Google Gemini** | A key from [aistudio.google.com](https://aistudio.google.com). Uses Google's OpenAI-compatible API; press ↻ to pick another model | `https://generativelanguage.googleapis.com/v1beta/openai`, `gemini-2.5-flash`, tools: Auto |
 | **Anthropic** | A key from platform.claude.com. Uses Anthropic's own Messages API | `https://api.anthropic.com/v1`, `claude-opus-5`, tools: Native |
 
 Each card has:
@@ -512,15 +518,15 @@ wondering** is on. Wondering waits while Minecraft is disconnected or the world 
 chat ("go do your own thing", "stop wandering around"). The prompt tells it that, now and then, it may
 say something in the chat to a player or to another robot nearby.
 
-**On its mind** (same card): thoughts fade after `thoughts.ttl` seconds (30 minutes by default) and only
+**On its mind** (same card): thoughts fade after `thoughts.ttl` seconds (10 minutes by default) and only
 the newest `thoughts.max` (10) are kept; 0 turns either off. Right before each wander, its mind may wander
 too, each on its own chance (1% by default):
 
 - **Forget** wipes every thought and leaves one: "I forgot what I was thinking about" (editable).
 - **ADHD** puts a random shower thought from a list (one per line, editable) on top of its mind. With
-  "ask the model for a new one first" on, the model is first asked, without the conversation or tools,
-  for `{"shower_thought": "..."}` with a prompt you can edit; the new thought joins the list, then one is
-  picked at random.
+  **ADHD: AI-generate thoughts** on, the model is first asked, without the conversation or tools, for
+  `{"shower_thought": "..."}` with a prompt you can edit (by default, a thought possibly from the point of
+  view of a Minecraft mob); the new thought joins the list, then one is picked at random.
 - **Both at once:** the mind is wiped, and the shower thought takes the place of the forget text.
 
 What happened shows up in the Automatic transcript.
@@ -914,7 +920,7 @@ Some things can't be done from outside the game without mods, and Ptolemy works 
   goes for the WebUI port, which also carries the MCP endpoint: anyone who can reach it can drive the
   robot and run commands (browsers on other sites are refused, other programs aren't).
 - API keys are saved in plain text in `.env` (git-ignored) and never sent back to the browser. Set
-  `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` in your environment instead if you'd rather
+  `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` in your environment instead if you'd rather
   not store them.
 - To recognise worlds, Ptolemy adds a dummy scoreboard objective called `ptolemy_<id>` to each world.
   It doesn't show anywhere unless you display it. `/scoreboard objectives remove ptolemy_<id>` removes it

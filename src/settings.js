@@ -23,10 +23,16 @@ Once in a while (not every time), if someone is around, you may say something in
 to a player, or to another robot (a robot only hears messages that contain its name). Keep it short and natural, and \
 don't start a conversation every time. End with one short sentence about what you did or thought.`;
 
-const DEFAULT_SHOWER_PROMPT = `Come up with one original "shower thought": a short, surprising, slightly absurd observation \
+const OLD_SHOWER_PROMPT = `Come up with one original "shower thought": a short, surprising, slightly absurd observation \
 about everyday life, games or the world, the kind of thing that pops into your head in the shower. For example: "Why do \
 we still use a floppy disk as the save icon?" Make it new, one sentence, no explanation. Reply with only this JSON and \
 nothing else: {"shower_thought": "..."}`;
+
+const DEFAULT_SHOWER_PROMPT = `Come up with one original "shower thought": a short, surprising, slightly absurd observation \
+about everyday life, games or the world, the kind of thing that pops into your head in the shower, possibly from the \
+perspective of a Minecraft entity (a creeper, a villager, a cow, a robot...). For example: "Why do we still use a floppy \
+disk as the save icon?" Make it new, one sentence, no explanation. Reply with only this JSON and nothing else: \
+{"shower_thought": "..."}`;
 
 const DEFAULT_ADHD_THOUGHTS = [
   'Why do we use floppy disks as save icons?',
@@ -114,6 +120,7 @@ const SCHEMA = [
           + 'interrupts its wondering; while it works on a request, new ones wait their turn unless they contain one of '
           + 'these words: then it drops what it\'s doing and answers. "Ptolemy, stop" on its own still just stops.' },
       { key: 'chat.distractedChance', label: 'Distracted: chance to miss a message (%)', default: 1, min: 0, max: 100, step: 0.5,
+        previous: [5],
         help: 'A chat message calling the robot (from a player or another robot) is missed this often: it shows in the '
           + 'transcript as missed, but the model never sees it and nothing is interrupted. Messages with an exception mark '
           + '(below), a bare "Ptolemy, stop" and anything from the WebUI are never missed. 0: always listens.' },
@@ -145,18 +152,19 @@ const SCHEMA = [
       + 'Forget wipes every thought for the text below, ADHD puts a random shower thought on top. Both at once: the mind is '
       + 'wiped and the shower thought takes the place of the forget text.',
     fields: [
-      { key: 'thoughts.ttl', label: 'Thoughts fade after (seconds)', default: 1800, min: 0, max: 604800, step: 60,
+      { key: 'thoughts.ttl', label: 'Thoughts fade after (seconds)', default: 600, min: 0, max: 604800, step: 60, previous: [1800],
         help: 'A thought older than this is dropped. 0: they never fade.' },
       { key: 'thoughts.max', label: 'Most thoughts kept', default: 10, min: 0, max: 100, step: 1,
         help: 'Beyond this many, the oldest is dropped. 0: no limit (at most 100 are ever kept).' },
       { key: 'wonder.forgetChance', label: 'Forget: chance per wander (%)', default: 1, min: 0, max: 100, step: 0.1 },
       { key: 'wonder.forgetText', label: 'Forget: what it thinks instead', type: 'text', default: 'I forgot what I was thinking about' },
       { key: 'wonder.adhdChance', label: 'ADHD: chance per wander (%)', default: 1, min: 0, max: 100, step: 0.1 },
-      { key: 'wonder.adhdGenerate', label: 'ADHD: ask the model for a new one first', type: 'boolean', default: true,
+      { key: 'wonder.adhdGenerate', label: 'ADHD: AI-generate thoughts', type: 'boolean', default: true,
         help: 'When ADHD kicks in, first ask the model (no conversation, no tools) for a new shower thought with the '
           + 'prompt below, and add it to the list. Then one is picked from the list at random.' },
       { key: 'wonder.adhdThoughts', label: 'ADHD: shower thoughts (one per line)', type: 'textarea', default: DEFAULT_ADHD_THOUGHTS },
       { key: 'wonder.showerPrompt', label: 'ADHD: shower thought prompt', type: 'textarea', default: DEFAULT_SHOWER_PROMPT,
+        previous: [OLD_SHOWER_PROMPT],
         help: 'Sent on its own, without the conversation or tools. The reply must contain {"shower_thought": "..."}.' },
     ],
   },

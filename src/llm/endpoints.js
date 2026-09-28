@@ -20,12 +20,18 @@ const PRESETS = {
     help: 'Start it with --api and load a model in its UI. The model box can stay empty: it uses whatever is loaded.',
   },
   nvidia: {
-    label: 'NVIDIA Build', api: 'openai', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.3-70b-instruct', toolMode: 'auto',
-    envKey: 'NVIDIA_API_KEY', help: 'Hosted models from build.nvidia.com. Needs an nvapi-... key.',
+    label: 'NVIDIA Build', api: 'openai', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'google/gemma-4-31b-it', toolMode: 'auto',
+    envKey: 'NVIDIA_API_KEY', previousModels: ['meta/llama-3.3-70b-instruct'],
+    help: 'Hosted models from build.nvidia.com. Needs an nvapi-... key (free to start). google/gemma-4-31b-it is the recommended model.',
   },
   openai: {
     label: 'OpenAI', api: 'openai', baseUrl: 'https://api.openai.com/v1', model: '', toolMode: 'native',
     envKey: 'OPENAI_API_KEY', help: 'Needs an API key from platform.openai.com. Refresh to pick a model.',
+  },
+  gemini: {
+    label: 'Google Gemini', api: 'openai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash',
+    toolMode: 'auto', envKey: 'GEMINI_API_KEY',
+    help: 'Gemini through Google\'s OpenAI-compatible API. Needs an API key from aistudio.google.com. Refresh to pick another model.',
   },
   anthropic: {
     label: 'Anthropic', api: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-opus-5', toolMode: 'native',
@@ -37,20 +43,34 @@ const PRESETS = {
   },
 };
 
-const BUILTIN = ['lmstudio', 'oobabooga', 'nvidia', 'openai', 'anthropic'];
+// The endpoints everyone starts with. A saved list gets any added since it was saved (once: `seen`
+// remembers which it has had, so one removed on purpose stays removed).
+const BUILTIN = ['nvidia', 'lmstudio', 'oobabooga', 'openai', 'gemini', 'anthropic'];
+const FIRST_BUILTIN = ['lmstudio', 'oobabooga', 'nvidia', 'openai', 'anthropic'];
+const DEFAULT_ACTIVE = 'nvidia';
 const TOOL_MODES = ['auto', 'native', 'text'];
 
 class EndpointStore extends EventEmitter {
   constructor() {
     super();
     this.endpoints = BUILTIN.map((preset) => defaults(preset, preset));
-    this.activeId = 'lmstudio';
+    this.activeId = DEFAULT_ACTIVE;
+    this.seen = [...BUILTIN];
     // Test results for this run of Ptolemy only: id -> { endpoint, model, mcp } of { ok, message, time }.
     this.tests = {};
     try {
       const saved = JSON.parse(fs.readFileSync(FILE, 'utf8'));
       if (Array.isArray(saved.endpoints) && saved.endpoints.length) {
-        this.endpoints = saved.endpoints.filter((e) => PRESETS[e.preset]).map((e) => ({ ...defaults(e.preset, e.id), ...e }));
+        this.endpoints = saved.endpoints.filter((e) => PRESETS[e.preset]).map((e) => {
+          const merged = { ...defaults(e.preset, e.id), ...e };
+          // A model left at an older default follows the new one.
+          if ((PRESETS[e.preset].previousModels || []).includes(merged.model)) merged.model = PRESETS[e.preset].model;
+          return merged;
+        });
+        const seen = Array.isArray(saved.seen) ? saved.seen : FIRST_BUILTIN;
+        for (const preset of BUILTIN) {
+          if (!seen.includes(preset) && !this.get(preset)) this.endpoints.push(defaults(preset, preset));
+        }
       }
       if (this.get(saved.active)) this.activeId = saved.active;
     } catch (err) {
@@ -173,7 +193,7 @@ class EndpointStore extends EventEmitter {
   _changed() {
     try {
       fs.mkdirSync(path.dirname(FILE), { recursive: true });
-      fs.writeFileSync(FILE, `${JSON.stringify({ active: this.activeId, endpoints: this.endpoints }, null, 2)}\n`);
+      fs.writeFileSync(FILE, `${JSON.stringify({ active: this.activeId, endpoints: this.endpoints, seen: this.seen }, null, 2)}\n`);
     } catch (err) {
       console.warn(`[endpoints] Couldn't save ${FILE}: ${err.message}`);
     }

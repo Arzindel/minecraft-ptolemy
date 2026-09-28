@@ -310,7 +310,10 @@ code, pre, input { font-family: var(--mono); }
   flex-wrap: wrap;
 }
 
-.cam-control { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+/* The title keeps its width: stretching it opened a gap before the filter buttons whenever the row wrapped. */
+.cam-toolbar .console-title { flex: none; white-space: nowrap; }
+.cam-control { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+#cam-radius { width: 90px; }
 .cam-control span { min-width: 2ch; color: var(--text); font-family: var(--mono); }
 
 .cam-toolbar select {

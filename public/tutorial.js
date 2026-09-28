@@ -17,7 +17,9 @@
           <code>/connect</code> command shown at the top of the page.</li>
         <li>No robot yet? A <b>Create Agent</b> box covers the Automatic panel: press it. Every player has one agent of their
           own; Ptolemy only ever sees and drives yours, never another player's.</li>
-        <li>Pick an LLM under <b>Configuration → LLM</b>, then talk to the robot in the Automatic panel or the game chat.</li>
+        <li>Pick an LLM under <b>Configuration → LLM</b>. The default, and the recommended one, is NVIDIA Build with
+          <code>google/gemma-4-31b-it</code>: paste an nvapi key into its card. Then talk to the robot in the Automatic panel or
+          the game chat.</li>
       </ol>`],
     ['talk', 'Talking to the robot', `
       <p>Two ways in: the <b>Automatic</b> panel on the Robot tab, and the <b>game chat</b>. In the chat, a message is for
@@ -75,7 +77,7 @@
         <li><b>Forget</b>: before a wander, on its chance, every thought is wiped and replaced by the forget text
           ("I forgot what I was thinking about").</li>
         <li><b>ADHD</b>: before a wander, on its own chance, a random shower thought from the list goes on top of its mind.
-          With <b>ask the model for a new one first</b>, the model is asked (with the shower thought prompt, no
+          With <b>ADHD: AI-generate thoughts</b>, the model is asked (with the shower thought prompt, no
           conversation, no tools) for a new one, which joins the list before one is picked.</li>
         <li>Both at once: the mind is wiped and the shower thought takes the place of the forget text.</li>
       </ul>`],

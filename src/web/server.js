@@ -209,7 +209,13 @@ class WebServer {
     ws.send(JSON.stringify(this.settings.message()));
     ws.send(JSON.stringify(pathMessage('walk', this.navigator.paths.walk)));
     ws.send(JSON.stringify(pathMessage('fly', this.navigator.paths.fly)));
-    for (const message of this.brain.initialMessages()) ws.send(JSON.stringify(message));
+    for (const message of this.brain.initialMessages()) {
+      try {
+        ws.send(JSON.stringify(message));
+      } catch (err) {
+        this._addLog('system', `Couldn't send the page its ${message.type}: ${err.message}`);
+      }
+    }
 
     // The WebUI is re-read from disk on every page load, but the server code only on
     // start-up, so after a `git pull` the page can be newer than the server behind it.

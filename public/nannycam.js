@@ -556,7 +556,8 @@
   // Scan radius: starts at the configured #scan default, shows the cube it covers.
   const showScanSize = () => {
     const r = Math.max(1, Math.min(15, Math.round(Number(scanRadius.value) || 1)));
-    scanSize.textContent = `${2 * r + 1}³ · ${((2 * r + 1) ** 3).toLocaleString()} blocks`;
+    scanSize.textContent = `${2 * r + 1}³`;
+    scanSize.title = `A cube of ${2 * r + 1}×${2 * r + 1}×${2 * r + 1} = ${((2 * r + 1) ** 3).toLocaleString()} blocks`;
   };
   scanRadius.addEventListener('input', showScanSize);
   let scanRadiusTouched = false;
