@@ -7,8 +7,8 @@ indestructible robot that does exactly one thing per command and never checks wh
 Bedrock can also open a WebSocket to an external program with `/connect`, which lets that program run
 commands in the world without any mods.
 
-Ptolemy connects the two. An LLM drives the agent in an MCP-style loop. It is slow,
-it wastes tokens, and it is awesome.
+Ptolemy connects the two. An LLM drives the agent in an MCP-style loop. It is dump, it is slow,
+it wastes tokens, and it is cool.
 
 ## The idea: make the agent a closed-loop system
 
