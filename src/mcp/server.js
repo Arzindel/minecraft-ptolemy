@@ -132,7 +132,10 @@ class McpServer {
         const coordinates = this.settings.get('llm.coordinates');
         let frame = null;
         try {
-          if (this.bridge.connected) frame = new Frame(await getAgentPose(this.bridge), coordinates);
+          // Not while there's no agent: asking where it is would create one.
+          if (this.bridge.connected && (!this.worlds || this.worlds.agent.exists === true)) {
+            frame = new Frame(await getAgentPose(this.bridge), coordinates);
+          }
         } catch { /* no agent: memory shown in world coordinates */ }
         const memory = this.worlds && this.worlds.current ? this.worlds.current.promptBlock(frame) : '';
         const text = `${systemPrompt({

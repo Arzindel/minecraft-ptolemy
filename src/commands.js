@@ -61,7 +61,7 @@ const SLASH = [
   ['agent till', '<direction>', 'Till the dirt or grass block beside the agent into farmland.', true],
   ['agent transfer', '<source slot> <quantity> <destination slot>', 'Move items between the agent\'s own inventory slots.', true],
   ['agent tp', '[x y z]', 'Teleport the agent to its owner, or to world coordinates. Only when a player asked for a teleport.', false],
-  ['agent create', '', 'Create the agent for this player if it doesn\'t exist yet.', true],
+  ['agent create', '', 'Create the agent for this player if it doesn\'t exist yet. The Create Agent button in the WebUI does this.', false],
   ['agent getposition', '', 'The agent\'s world position and rotation.', false],
   ['agent detect / inspect / inspectdata', '<direction>', 'Meant to sense blocks, but return no data in regular Bedrock.', false],
   ['testforblock', '<x y z> <block>', 'Checks one block; Ptolemy uses it (with "air") to identify blocks.', false],

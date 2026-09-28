@@ -184,16 +184,29 @@
     window.ptolemy.send({ type: 'memory', op: 'agentCreate' });
   });
 
-  document.addEventListener('ptolemy:worldStatus', (ev) => {
-    const agent = ev.detail.agent || {};
-    // Right after pressing Create, give the game a moment before showing it again.
-    const waiting = Date.now() - createdAt < 3000;
-    missing.hidden = agent.exists !== false || waiting;
-    missingDetail.textContent = agent.exists === false && createdAt && !waiting
-      ? `Still no agent. The game said: "${agent.message || 'nothing'}". Agents need cheats on (or Education Edition).` : '';
-  });
+  // Shown while connected, once the world is detected, until the agent is known to exist. Nothing sends
+  // agent commands on its own before then: any of them would make the game create the agent.
+  let connected = false;
+  let world = null;
+  function renderMissing() {
+    const agent = (world && world.agent) || {};
+    const detected = world && ['ok', 'unmarked'].includes(world.detection.state);
+    const waiting = Date.now() - createdAt < 3000; // right after pressing Create, give the game a moment
+    missing.hidden = !connected || !detected || agent.exists === true || agent.checking || waiting;
+    if (agent.exists === false && createdAt && !waiting) {
+      missingDetail.textContent = `Still no agent. The game said: "${agent.message || 'nothing'}". Agents need cheats on (and `
+        + 'Education Edition features).';
+    } else if (agent.exists === null) {
+      missingDetail.textContent = `Ptolemy couldn't tell whether you have one${agent.message ? ` (${agent.message})` : ''}. If you do, `
+        + 'pressing the button just finds it.';
+    } else {
+      missingDetail.textContent = '';
+    }
+  }
+  document.addEventListener('ptolemy:worldStatus', (ev) => { world = ev.detail; renderMissing(); });
   document.addEventListener('ptolemy:status', (ev) => {
-    if (!ev.detail.minecraft || !ev.detail.minecraft.connected) missing.hidden = true;
+    connected = Boolean(ev.detail.minecraft && ev.detail.minecraft.connected);
+    renderMissing();
   });
 
   stopBtn.addEventListener('click', () => window.ptolemy.send({ type: 'pilotStop' }));

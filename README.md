@@ -731,7 +731,10 @@ plus every setting with its default and help, straight from the settings; click 
 - **Bottom half: Automatic, the Manual console and the Nanny Cam,** side by side.
 - **No agent yet?** When you connect and you (the connected player) don't have an agent in this world,
   a **Create Agent** box covers the Automatic panel. Pressing it runs `agent create` and the box goes
-  away. Only your own agent counts: `agent getposition` never sees another player's.
+  away. Nothing creates the agent before that: in Bedrock *any* agent command creates it (even
+  `agent getposition`), so Ptolemy looks for it as an entity instead (`testfor @e[type=minecraft:agent]`,
+  whose names say whose each agent is, like `Arzindel.Agent`), and Vision, the Dashboard, held slots,
+  wondering and the robot's tools all wait until it exists. Only your own agent counts.
 
 On narrow windows everything stacks and the page scrolls.
 
@@ -907,6 +910,8 @@ Some things can't be done from outside the game without mods, and Ptolemy works 
 - **The inventory can't be read**, only written with `agent setitem`, and a slot can't be emptied. Hence held
   slots and the scratch slot.
 - **One agent per player.** Every Ptolemy drives only the agent of the player whose game is connected to it.
+- **Any agent command creates the agent.** So Ptolemy never sends one on its own until the agent exists:
+  it checks for it by name with `testfor`, and otherwise waits for the Create Agent button.
 - **Bedrock doesn't say which world is open.** Ptolemy marks each world with a scoreboard objective, which
   needs cheats; without them, all worlds share one memory.
 - **Robots hear each other through the chat.** Another player's robot only reaches yours if its chat lines

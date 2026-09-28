@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { WorldMemory } = require('./memory');
+const { parseNames } = require('../agent/entities');
 
 const WORLDS_DIR = path.join(__dirname, '..', '..', 'data', 'worlds');
 // Bedrock can't tell us which world it has open, so Ptolemy marks each world itself: a dummy
@@ -26,7 +27,10 @@ class WorldManager extends EventEmitter {
     Object.assign(this, { bridge, log, thoughtRules });
     this.current = null; // WorldMemory
     this.detection = { state: 'waiting', message: 'Waiting for Minecraft to connect.' };
-    this.agent = { exists: null }; // null = unknown
+    // Whether the connected player has an agent: true, false, or null (not known yet, or couldn't tell).
+    // Nothing runs agent commands on its own until this is true, because any agent command makes the
+    // game create the agent.
+    this.agent = { exists: null };
     this._detecting = null;
   }
 
@@ -95,15 +99,38 @@ class WorldManager extends EventEmitter {
   }
 
   /**
-   * Does the connected player have an agent in this world yet? `agent ...` commands only ever reach
-   * the agent of the player whose game runs them, so another player's agent never counts.
+   * Does the connected player have an agent in this world yet? Asked WITHOUT an agent command:
+   * Bedrock creates the agent as soon as any `agent ...` command runs (even agent getposition), so
+   * the agents are looked up as entities instead. Each is named after its owner ("Arzindel.Agent"), so
+   * another player's agent never counts. Sets this.agent to { exists: true | false | null, message }.
    */
   async checkAgent() {
     if (!this.bridge.connected) return;
-    const res = await this.bridge.sendCommand('agent getposition', { quiet: true });
-    // A timeout or a dropped connection (no reply from the game at all) says nothing either way.
-    if (!res.ok && !res.body) return;
-    this.agent = { exists: Boolean(res.ok && res.body && res.body.position), message: res.ok ? '' : res.statusMessage };
+    if (this.agent.exists !== true) {
+      this.agent = { exists: null, checking: true, message: '' };
+      this.emit('status');
+    }
+    const player = this.bridge.player;
+    // "minecraft:agent", not "agent": agent is a command keyword, which breaks a selector.
+    const res = await this.bridge.sendCommand('testfor @e[type=minecraft:agent]', { quiet: true });
+    if (!res.ok && !res.body) return; // no reply from the game at all: says nothing either way
+    const names = parseNames(res);
+    const none = !res.ok && /no targets matched/i.test(res.statusMessage || '');
+    let exists = null;
+    let message = '';
+    if (none) exists = false;
+    else if (!res.ok) message = `Couldn't look for agents: ${res.statusMessage}`;
+    else if (player && names.some((n) => ownerOf(n) === player.toLowerCase())) exists = true;
+    else if (player && names.length && names.every((n) => ownerOf(n) !== null)) exists = false; // only other players' agents
+    else message = `Found agents (${names.join(', ') || 'unnamed'}), but couldn't tell whose they are.`;
+    this.agent = { exists, message };
+    this.emit('status');
+  }
+
+  /** The agent was just created, or an agent command worked: it exists. */
+  agentExists() {
+    if (this.agent.exists === true) return;
+    this.agent = { exists: true, message: '' };
     this.emit('status');
   }
 
@@ -170,4 +197,10 @@ class WorldManager extends EventEmitter {
   }
 }
 
-module.exports = { WorldManager, WORLDS_DIR };
+/** The owner in an agent's name ("Arzindel.Agent" → "arzindel"), or null if the name doesn't say. */
+function ownerOf(name) {
+  const m = /^(.+?)(?:'s)?[.\s]+agent$/i.exec(String(name).trim());
+  return m ? m[1].toLowerCase() : null;
+}
+
+module.exports = { WorldManager, WORLDS_DIR, ownerOf };

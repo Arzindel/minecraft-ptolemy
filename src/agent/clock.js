@@ -130,14 +130,15 @@ function hasPlaceholders(text) {
  * asked for right now; if that fails, the last reading is used, and a placeholder that can't be
  * filled at all is left as it is).
  */
-async function expandPlaceholders(text, { bridge, clock }) {
+async function expandPlaceholders(text, { bridge, clock, agentReady = () => true }) {
   const s = String(text ?? '');
   if (!hasPlaceholders(s)) return s;
   const wanted = new Set([...s.matchAll(placeholderRe())].map((m) => m[1]));
   const needsClock = wanted.has('time_now') || wanted.has('weather') || wanted.has('day');
   const [now, pose] = await Promise.all([
     needsClock && clock ? clock.refresh().catch(() => clock.now()) : null,
-    wanted.has('my_coordinates') && bridge.connected ? getAgentPose(bridge).catch(() => null) : null,
+    // Not while there's no agent: asking where it is would create one.
+    wanted.has('my_coordinates') && bridge.connected && agentReady() ? getAgentPose(bridge).catch(() => null) : null,
   ]);
   const values = {
     time_now: now && now.time,

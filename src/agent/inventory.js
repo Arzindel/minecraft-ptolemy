@@ -44,10 +44,11 @@ class Inventory extends EventEmitter {
    * @param {import('../minecraft/bridge').MinecraftBridge} deps.bridge
    * @param {import('../settings').Settings} deps.settings
    * @param {import('../world/manager').WorldManager} deps.worlds   the held slots are kept per world
+   * @param {() => boolean} [deps.ready]   false while there's no agent (refilling would create one)
    */
-  constructor({ bridge, settings, worlds }) {
+  constructor({ bridge, settings, worlds, ready = () => true }) {
     super();
-    Object.assign(this, { bridge, settings, worlds });
+    Object.assign(this, { bridge, settings, worlds, ready });
     this._last = 0;
     this._refilling = false;
     this._timer = setInterval(() => this._tick(), TICK_MS);
@@ -71,6 +72,7 @@ class Inventory extends EventEmitter {
     const variant = variantNumber(data);
     if (!this.worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
     if (!this.bridge.connected) throw new Error('Minecraft is not connected');
+    if (!this.ready()) throw new Error('there\'s no agent yet: create it first (the Create Agent button)');
     const res = await this.setItem(n, id, this.settings.get('inventory.amount'), variant);
     if (!res.ok) throw new Error(`the game refused "agent setitem ${n} ${id}": ${res.statusMessage}`);
     this.worlds.current.setHeld(n, id, variant);
@@ -103,7 +105,7 @@ class Inventory extends EventEmitter {
   _tick() {
     const every = this.settings.get('inventory.refreshSeconds') * 1000;
     const held = this.held();
-    if (!every || !held.length || !this.bridge.connected || this._refilling || Date.now() - this._last < every) return;
+    if (!every || !held.length || !this.bridge.connected || !this.ready() || this._refilling || Date.now() - this._last < every) return;
     this._last = Date.now();
     this._refilling = true;
     const amount = this.settings.get('inventory.amount');

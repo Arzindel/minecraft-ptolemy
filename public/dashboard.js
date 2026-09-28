@@ -205,7 +205,7 @@
     if (w) worldBody.append(el('p', { className: 'muted small', textContent: `id ${w.id} · first seen ${new Date(w.createdAt).toLocaleDateString()}` }));
 
     const agent = st.agent || {};
-    if (agent.exists === false) {
+    if (agent.exists !== true && !agent.checking && ['ok', 'unmarked'].includes(st.detection.state)) {
       const create = el('button', { type: 'button', className: 'btn btn-primary btn-small', textContent: 'Create the agent' });
       create.addEventListener('click', () => op('agentCreate'));
       worldBody.append(el('p', { className: 'warn' }, 'This world has no agent yet. ', create));

@@ -42,10 +42,10 @@ class Brain {
     // The game's time and weather (read-only), and {time_now}-style placeholders filled in as messages go out.
     this.clock = new Clock({ bridge });
     this.clock.on('change', () => this.broadcast(this.clock.message()));
-    const placeholders = (text) => expandPlaceholders(text, { bridge, clock: this.clock });
+    const placeholders = (text) => expandPlaceholders(text, { bridge, clock: this.clock, agentReady: () => this.agentReady() });
     this.robotsHeard = new Map(); // other robots' names -> when they last spoke in the chat
     // Inventory slots kept stocked with an item (per world), refilled with agent setitem.
-    this.inventory = new Inventory({ bridge, settings, worlds: this.worlds });
+    this.inventory = new Inventory({ bridge, settings, worlds: this.worlds, ready: () => this.agentReady() });
     this.inventory.on('change', () => this.broadcast(this.inventory.message()));
     settings.on('change', (changed) => {
       if ('inventory.amount' in changed) this.broadcast(this.inventory.message());
@@ -70,6 +70,7 @@ class Brain {
       clock: this.clock,
       placeholders,
       inventory: this.inventory,
+      agentReady: () => this.agentReady(),
     });
     // Commands tab: editable descriptions of the tools (what the model reads), # and / commands.
     this.commands = new CommandCatalog({ tools: this.toolbox.tools });
@@ -145,6 +146,19 @@ class Brain {
     this._clockAt = 0;
     this._clockTimer = setInterval(() => this._tickClock(), 1000);
     this._clockTimer.unref();
+  }
+
+  /**
+   * Does the connected player's agent exist (as far as Ptolemy knows)? Nothing sends agent commands on
+   * its own until it does, because any agent command makes the game create the agent.
+   */
+  agentReady() {
+    return this.bridge.connected && this.worlds.agent.exists === true;
+  }
+
+  /** An agent command worked (typed in the console, say): the agent exists now. */
+  agentSeen() {
+    this.worlds.agentExists();
   }
 
   /**
@@ -369,10 +383,18 @@ class Brain {
       case 'detect': await w.detect(); return;
       case 'claim': await w.claim(String(msg.id)); return;
       case 'deleteWorld': w.deleteWorld(String(msg.id)); return;
-      case 'agentCreate':
-        await this.bridge.sendCommand('agent create');
-        await w.checkAgent();
+      case 'agentCreate': {
+        const res = await this.bridge.sendCommand('agent create');
+        // "Already exists" means there is one after all.
+        if (res.ok || /exist/i.test(res.statusMessage || '')) {
+          w.agentExists();
+          if (this.vision) this.vision.soon();
+        } else {
+          w.agent = { exists: false, message: res.statusMessage };
+          w.emit('status');
+        }
         return;
+      }
       case 'hold': {
         const h = await this.inventory.hold(msg.slot, msg.item, msg.data || 0);
         this.log(`Slot ${h.slot} now holds ${h.item}${h.data ? ` (variant ${h.data})` : ''}, kept stocked.`);
@@ -398,6 +420,7 @@ class Brain {
       case 'areaAround': {
         // An area around the robot or the player, e.g. "this room" while standing in it.
         const r = Math.max(0, Math.min(64, Math.round(Number(msg.radius) || 0)));
+        if (msg.who !== 'player' && !this.agentReady()) throw new Error('there\'s no agent yet: create it first (the Create Agent button)');
         const p = msg.who === 'player' ? await this._playerPosition() : await getAgentPose(this.bridge);
         if (!p) throw new Error('couldn\'t get that position');
         m.setArea(msg.name, [p.x - r, p.y - (msg.who === 'player' ? 1 : 0), p.z - r], [p.x + r, p.y + Math.max(r, 2), p.z + r], msg.note);
@@ -508,14 +531,13 @@ class Brain {
     if (!this.bridge.connected || !this.worlds.current) return;
     const m = this.worlds.current;
     let robot = null;
-    try {
-      const pose = await getAgentPose(this.bridge);
-      robot = { x: pose.x, y: pose.y, z: pose.z, facing: ['south', 'west', 'north', 'east'][pose.facing], areas: m.describeAreasAt(pose.x, pose.y, pose.z) };
-      if (this.worlds.agent.exists !== true) {
-        this.worlds.agent = { exists: true };
-        this.broadcast(this.worlds.status());
-      }
-    } catch { /* no agent */ }
+    // Only once the agent is known to exist: asking where it is would create it.
+    if (this.agentReady()) {
+      try {
+        const pose = await getAgentPose(this.bridge);
+        robot = { x: pose.x, y: pose.y, z: pose.z, facing: ['south', 'west', 'north', 'east'][pose.facing], areas: m.describeAreasAt(pose.x, pose.y, pose.z) };
+      } catch { /* not where it was */ }
+    }
     const everyone = await allPlayers(this.bridge).catch(() => []);
     const list = everyone.map((p) => ({ ...p, areas: m.describeAreasAt(p.x, p.y, p.z) || m.describeAreasAt(p.x, p.y - 1, p.z), host: p.name === this.bridge.player }));
     this.positions = { type: 'positions', robot, players: list, time: Date.now() };

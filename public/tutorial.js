@@ -15,8 +15,9 @@
           (or downloads a private copy into <code>.node/</code>), installs what's needed, starts, and opens this page.</li>
         <li>In Minecraft (a world with cheats on, and Education Edition features on for the agent), run the
           <code>/connect</code> command shown at the top of the page.</li>
-        <li>No robot yet? A <b>Create Agent</b> box covers the Automatic panel: press it. Every player has one agent of their
-          own; Ptolemy only ever sees and drives yours, never another player's.</li>
+        <li>No robot yet? A <b>Create Agent</b> box covers the Automatic panel: press it. Nothing creates the agent before you
+          do (in Bedrock any agent command would, so Ptolemy holds them all back until then). Every player has one agent of
+          their own; Ptolemy only ever sees and drives yours, never another player's.</li>
         <li>Pick an LLM under <b>Configuration → LLM</b>. The default, and the recommended one, is NVIDIA Build with
           <code>google/gemma-4-31b-it</code>: paste an nvapi key into its card. Then talk to the robot in the Automatic panel or
           the game chat.</li>

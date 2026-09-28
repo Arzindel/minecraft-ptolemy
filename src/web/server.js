@@ -68,7 +68,9 @@ class WebServer {
     });
 
     // Vision: a small look around after every step and action (and when idle), into the map.
-    this.vision = new Vision({ bridge, world: this.world, settings: this.settings, busy: () => this.navigator.busy });
+    this.vision = new Vision({
+      bridge, world: this.world, settings: this.settings, busy: () => this.navigator.busy, enabled: () => this._agentReady(),
+    });
     this.vision.on('look', (look) => this._onLook(look));
     this.vision.on('moved', (pose) => {
       // The robot moved without Ptolemy moving it (by hand, or a teleport).
@@ -141,6 +143,10 @@ class WebServer {
     bridge.on('chat', ({ sender, message, type }) => {
       this._addLog('chat', message, { sender });
       this.brain.chat(sender, message, type);
+    });
+    // An agent command that worked (typed in the console, say) means the agent exists now.
+    bridge.on('response', (res) => {
+      if (res.ok && /^agent\s/i.test(res.commandLine)) this.brain.agentSeen();
     });
     // Moving the agent by hand invalidates stored paths (the walker's own commands are quiet).
     bridge.on('response', (res) => {
@@ -436,10 +442,19 @@ class WebServer {
     }
   }
 
+  /** The connected player has an agent (so asking where it is won't create one). */
+  _agentReady() {
+    return Boolean(this.brain && this.brain.agentReady());
+  }
+
   /** Scan around the agent and make the result its Sight. `quiet` logs one line instead of the layers. */
   async _scan(radius, { quiet = false } = {}) {
     if (!this.bridge.connected) {
       this._addLog('system', 'Scan needs Minecraft to be connected.');
+      return null;
+    }
+    if (!this._agentReady()) {
+      this._addLog('system', 'There\'s no agent yet: create it first (the Create Agent button), then scan.');
       return null;
     }
     if (!quiet) this._addLog('system', 'Scanning around the agent...');
@@ -483,6 +498,10 @@ class WebServer {
   async _entities(radius, { quiet = false } = {}) {
     if (!this.bridge.connected) {
       this._addLog('system', 'Looking for entities needs Minecraft to be connected.');
+      return null;
+    }
+    if (!this._agentReady()) {
+      this._addLog('system', 'There\'s no agent yet: create it first (the Create Agent button), then look for entities.');
       return null;
     }
     try {

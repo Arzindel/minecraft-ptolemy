@@ -55,11 +55,16 @@ async function answer(line) {
     console.log(`Ptolemy marked this world: ${line.split(' ')[3]} (FAKE_WORLD=${line.split(' ')[3]} reopens it)`);
     return { ok: true, body: { statusMessage: 'Added' } };
   }
-  // FAKE_NO_AGENT=1: no agent until Ptolemy runs "agent create" (to try the Create Agent button).
+  // FAKE_NO_AGENT=1: start without an agent. Like Bedrock, ANY agent command creates it (not only
+  // "agent create"), so this says loudly which command did, to catch Ptolemy creating it on its own.
+  if (line.startsWith('testfor @e[type=minecraft:agent')) {
+    return noAgent ? { ok: false, body: { statusCode: -2147352576, statusMessage: 'No targets matched selector' } }
+      : { ok: true, body: { statusMessage: 'Found Arzindel.Agent', victim: ['Arzindel.Agent'] } };
+  }
   if (noAgent && line.startsWith('agent ')) {
-    if (line === 'agent create') noAgent = false;
-    return line === 'agent create' ? { ok: true, body: { statusMessage: 'Agent created' } }
-      : { ok: false, body: { statusCode: -2147352576, statusMessage: 'No agent found for this player' } };
+    noAgent = false;
+    console.log(`AGENT CREATED by "${line}"`);
+    if (line === 'agent create') return { ok: true, body: { statusMessage: 'Agent created' } };
   }
   if (/^querytarget @e\[.*(name=|type=|family=)/.test(line)) return filteredTargets(line);
   // The clock runs 20 ticks a second from 1000 (07:00); it rains.
