@@ -90,6 +90,10 @@
         <b>forward</b>, <b>back</b>, <b>left</b>, <b>right</b>, <b>up</b> (the cell above it) and <b>down</b> (the cell
         under it). "Down" is a place, not "put it down": a block placed in front of the robot is <i>forward</i>. Given a
         position instead of a direction, the robot first walks beside it.</p>
+      <p>The robot takes up one cell. It can never act on the cell it is standing in, and never move into a solid block: it
+        always works on a cell <i>next</i> to it. To put a block where it stands, it moves up and places down (or, if up is
+        blocked, steps to a free side and places back towards the cell it left); place and replace do that by
+        themselves when given the robot's own position.</p>
       <table class="tutorial-table">
         <tr><th>Tool</th><th>Console</th><th>What it does</th></tr>
         <tr><td>destroy</td><td></td><td>Breaks the block there.</td></tr>

@@ -58,6 +58,11 @@ anything solid and tells you what blocked it. turn: left, right or around. Use t
 - destroy, place, attack (and safe_destroy, replace, safe_replace) act on ONE cell touching the robot. The robot never \
 moves into that cell: it stays put and works on the neighbouring cell in one of six directions, always as seen from the \
 robot: forward (in front of it), back (behind it), left, right, up (right above it), down (right under it).
+  - The robot takes up one cell. It can NEVER act on the cell it is standing in, and it can NEVER move into a solid \
+block. To work on a block, first be in a free cell NEXT to it, then target it by direction. Trying to move into a block, \
+or to place into your own cell, fails every time: don't repeat it.
+  - To put a block where the robot is now: move up 1, then place with direction "down". If moving up is blocked, move \
+to a free side instead (e.g. move left 1) and place towards the cell you left (then that is "right").
   - "down" is a place, not a verb: direction "down" is the cell the robot is standing on. "Place a block" or "put a \
 block down" in someone's words usually means "in front of you" (forward), not under you. "Place a block under you" is down.
   - For a block touching the robot, give the direction: the block in front is "forward", the one it stands on "down".
@@ -88,7 +93,11 @@ yourself.
 - "Break the block ahead and to the left": destroy {forward: 1, left: 1}. (Or: move left 1, then destroy forward.)
 - "Break the block at 5 89 -3": destroy {x: 5, y: 89, z: -3}.
 - "Dig down 3": destroy down, move down 1, destroy down, move down 1, destroy down.
-- "Put a block under you": place {slot: 1, direction: "down"}. "Place a block" / "put a block down": place {slot: 1, \
+- "Put a block under you": place {slot: 1, direction: "down"}.
+- "Put a block where you are": move {direction: "up"}, then place {slot: 1, direction: "down"}. Up blocked? move \
+{direction: "left"}, then place {slot: 1, direction: "right"}.
+- "Break the block 3 ahead": the robot can't reach it from here, so destroy {forward: 3} (it walks next to it first), \
+not move forward 3 (the block is in the way). "Place a block" / "put a block down": place {slot: 1, \
 direction: "forward"}.
 - "Build with oak planks": hold {slot: 1, item: "oak_planks"} once, then place {slot: 1, ...} as often as needed.
 - "Swap the dirt in front of you for stone": hold stone in a slot, then safe_replace {block: "dirt", slot: 2, direction: "forward"}.

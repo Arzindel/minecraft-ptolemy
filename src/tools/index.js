@@ -318,9 +318,11 @@ function createToolbox({
   /**
    * destroy / place / attack on a block given either as a direction or as coordinates. With
    * coordinates the robot first walks to a cell beside the block (never into it), then acts in the
-   * right direction. Returns { direction, note } or { error }.
+   * right direction. With `stepAside` (place, replace), a target that is the robot's own cell is
+   * handled by stepping out of it first: up if that's free (then placing down), else to a free side.
+   * Returns { direction, note } or { error }.
    */
-  async function reach(args) {
+  async function reach(args, { stepAside = false } = {}) {
     const { direction } = args;
     if (direction !== undefined && direction !== null && direction !== '') {
       checkDirection(direction);
@@ -334,7 +336,9 @@ function createToolbox({
         + 'position: relative (e.g. forward 2, left 1) or world (x, y, z)');
     }
     if (target[0] === pose.x && target[1] === pose.y && target[2] === pose.z) {
-      return { error: 'That is where the robot itself is. Give a block next to it, e.g. direction "forward".' };
+      if (stepAside) return stepOutOf(pose, target);
+      return { error: 'That is the cell the robot is in. The robot can\'t act on its own cell, and it can\'t move into a block: '
+        + 'it works on a cell NEXT to it. Give a direction (forward, back, left, right, up, down) or a position touching the robot.' };
     }
     const adjacent = directionTo(pose, ...target);
     if (adjacent) return { direction: adjacent, note: '' };
@@ -354,6 +358,29 @@ function createToolbox({
       return { error: `Couldn't get next to that block: ${lines.map((l) => afterFrame.convertText(l)).join(' ')}` };
     }
     return { direction: dir, note: `Walked next to it first (${countMoved(pose, after)} blocks). ${afterMove(afterFrame)} ` };
+  }
+
+  /**
+   * The robot is standing in the cell it should place into: move one block out of it (up first, then
+   * the sides) and target the cell it left. Returns { direction, note } or { error }.
+   */
+  async function stepOutOf(pose, target) {
+    for (const d of ['up', 'left', 'right', 'back', 'forward']) {
+      const [dx, dy, dz] = offsetOf(d, pose.facing);
+      const cell = [pose.x + dx, pose.y + dy, pose.z + dz];
+      if (isSolid(await blockAt(...cell))) continue;
+      const expect = { x: cell[0], y: cell[1], z: cell[2], facing: pose.facing };
+      const result = await navigator.runSteps([{ action: d, command: `agent move ${d}`, expect, enters: cell }]);
+      if (!result.ok) continue;
+      const now = await getAgentPose(bridge);
+      const dir = directionTo(now, ...target);
+      if (dir) {
+        return { direction: dir, note: `The robot was standing in that cell, so it moved 1 ${d} first and works on it from there `
+          + `(direction ${dir}). ` };
+      }
+    }
+    return { error: 'The robot is standing in that cell and can\'t step out of it (up and every side are blocked), so nothing '
+      + 'can be placed there.' };
   }
 
   /** A look for entities, told the way a model can use it. */
@@ -716,9 +743,9 @@ function createToolbox({
 
   // --- Acting on blocks -------------------------------------------------------
 
-  const WHERE = 'Give EITHER direction (for a cell touching the robot) OR the cell\'s position, relative (e.g. {forward: 2, '
-    + 'left: 1}) or world ({x, y, z}), at any distance: the robot first walks to a spot beside it. The robot never moves '
-    + 'into that cell.';
+  const WHERE = 'The robot always works on a cell NEXT to it, never on the cell it is in, and it can\'t move into a solid '
+    + 'block. Give EITHER direction (for a cell touching the robot) OR the cell\'s position, relative (e.g. {forward: 2, '
+    + 'left: 1}) or world ({x, y, z}), at any distance: the robot first walks to a free spot beside it, then acts on it.';
   const SLOT = { type: 'integer', minimum: 1, maximum: 27, description: 'Inventory slot (1-27). Your memory says which slots are '
     + 'kept stocked with what; the others are unknown.' };
   const BLOCK = { type: 'string', description: 'The block id it must be, e.g. "oak_log", "stone", "dirt".' };
@@ -762,14 +789,16 @@ function createToolbox({
     description: 'Put a block from an inventory slot into an EMPTY cell touching the robot (air, water, grass...). The robot '
       + `stays where it is. ${WHERE} Examples: a block in front of the robot: {slot: 1, direction: "forward"}; a block under `
       + 'the robot (a floor or a bridge under itself): {slot: 1, direction: "down"}; on top of it: "up". '
-      + 'If the cell holds a block, use replace instead.',
+      + 'To put a block where the robot is right now, it has to get out of the way first: move up 1, then place down (if up '
+      + 'is blocked, move to a free side and place back towards that cell). Given the robot\'s own cell as the position, '
+      + 'place does that by itself. If the cell holds a block, use replace instead.',
     parameters: {
       type: 'object',
       properties: { slot: SLOT, direction: dirParam('Which cell to fill.'), ...POSITION_PROPS },
       required: ['slot'],
     },
     async run(args) {
-      const r = await reach(args);
+      const r = await reach(args, { stepAside: true });
       if (r.error) throw new Error(r.error);
       return withNote(r.note, () => actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `));
     },
@@ -787,7 +816,7 @@ function createToolbox({
       required: ['slot'],
     },
     async run(args) {
-      const r = await reach(args);
+      const r = await reach(args, { stepAside: true });
       if (r.error) throw new Error(r.error);
       return withNote(r.note, () => replaceCell(r.direction, clampInt(args.slot, 1, 27)));
     },
