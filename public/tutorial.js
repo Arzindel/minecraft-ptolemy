@@ -103,6 +103,9 @@
           the new block, unless the slot is empty (then it only breaks).</td></tr>
         <tr><td>safe_replace</td><td><code>#safe_replace dirt 1 down</code></td><td>Replaces only if the block there is that block.</td></tr>
       </table>
+      <p>The robot is told to prefer the <b>safe</b> versions whenever it knows what the block is (it usually does: it
+        is told what touches it, and can scan), so a wrong direction or an old position never breaks the wrong thing. It
+        uses plain destroy / replace only when it can't know, or when any block will do.</p>
       <p>When nothing changed, the action fails (✗ in the transcript) and says why: nothing to break, a block that won't
         break, the cell isn't empty (use replace), a player, mob or robot standing in the way, or else probably an empty
         inventory slot.</p>`],

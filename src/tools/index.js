@@ -755,7 +755,8 @@ function createToolbox({
     description: 'Break the one block in a cell touching the robot. The robot stays where it is. '
       + `${WHERE} Examples: the block in front: {direction: "forward"}; the block the robot stands on: {direction: "down"}; `
       + 'a block ahead and to the left: {forward: 1, left: 1}. The drop may go into the robot\'s inventory or onto the ground. '
-      + 'To break only a certain kind of block, use safe_destroy.',
+      + 'Prefer safe_destroy whenever you know what the block is (you usually do): it won\'t break the wrong one. Use destroy '
+      + 'only when you can\'t know, or any block will do.',
     destructive: true,
     parameters: { type: 'object', properties: { direction: dirParam('Which cell\'s block to break.'), ...POSITION_PROPS } },
     async run(args) {
@@ -767,8 +768,9 @@ function createToolbox({
 
   add({
     name: 'safe_destroy',
-    description: 'Like destroy, but first checks that the block is the one named (e.g. "oak_log"), and breaks it only if so. '
-      + `Use it when breaking the wrong block would be bad: felling a tree next to a house, digging near what was built. ${WHERE}`,
+    description: 'Break a block, but only if it is the one named (e.g. "oak_log"): the preferred way to break blocks. A wrong '
+      + 'direction or an out-of-date position then does nothing instead of breaking a wall or a player\'s build. The [Now] '
+      + `block says what touches you; scan and get_blocks tell the rest. ${WHERE}`,
     destructive: true,
     parameters: {
       type: 'object',
@@ -808,7 +810,8 @@ function createToolbox({
     name: 'replace',
     description: 'Put a block from an inventory slot into a cell touching the robot, whatever is there now: it breaks the '
       + 'block first (if any), then places. It always ends with the new block there, unless the slot is empty (then it only '
-      + `breaks) or the old block can't be broken. ${WHERE} To replace only a certain kind of block, use safe_replace.`,
+      + `breaks) or the old block can't be broken. ${WHERE} Prefer safe_replace whenever you know what's there now; use replace `
+      + 'only when you can\'t know, or any block will do.',
     destructive: true,
     parameters: {
       type: 'object',
@@ -824,8 +827,8 @@ function createToolbox({
 
   add({
     name: 'safe_replace',
-    description: 'Like replace, but only if the block there now is the one named (e.g. replace "dirt" with planks from a slot); '
-      + `otherwise it does nothing. ${WHERE}`,
+    description: 'Replace a block, but only if the block there now is the one named (e.g. replace "dirt" with planks from a '
+      + `slot); otherwise it does nothing. The preferred way to replace blocks: nothing else gets broken by mistake. ${WHERE}`,
     destructive: true,
     parameters: {
       type: 'object',

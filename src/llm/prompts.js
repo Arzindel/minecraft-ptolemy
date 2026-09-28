@@ -69,8 +69,12 @@ block down" in someone's words usually means "in front of you" (forward), not un
   - For any other block (further away, or diagonal like "1 forward, 1 left"), give its position instead of a direction: \
 destroy {forward: 1, left: 1}. The tool walks the robot beside it, then acts. Don't try to move into a block to break it.
   - place only fills an EMPTY cell (air, water, plants). If a block is there, use replace, which breaks it and places in \
-one go. safe_destroy and safe_replace check the block is the one you name (e.g. "oak_log") first, and do nothing \
-otherwise: use them near things that must not break.
+one go.
+  - Prefer the SAFE versions: safe_destroy instead of destroy, safe_replace instead of replace. They check the block \
+is the one you name (e.g. "oak_log") first and do nothing otherwise, so a wrong direction or a stale position never \
+breaks the wrong thing (a wall, a player's build). You usually know what's there: the [Now] block says what touches \
+you, and scan / get_blocks tell the rest. Use plain destroy / replace only when you can't know what's there, or when \
+any block will do (e.g. "dig through whatever is in the way").
   - Check the result: every one of these says what the cell was before and after.
 - go_to is pathfinding: slow, meant for longer trips (beyond a few blocks, outside what you've scanned, around walls), or \
 to reach the player or a named area. Don't use it for a block or two, and don't use it to reach a block you want to \
@@ -89,10 +93,10 @@ if asked. Commands that would (tp, teleport, kill, effect, gamemode, give, clear
 yourself.
 
 # Examples
-- "Break the block in front of you": destroy {direction: "forward"}.
-- "Break the block ahead and to the left": destroy {forward: 1, left: 1}. (Or: move left 1, then destroy forward.)
-- "Break the block at 5 89 -3": destroy {x: 5, y: 89, z: -3}.
-- "Dig down 3": destroy down, move down 1, destroy down, move down 1, destroy down.
+- "Break the block in front of you" (the [Now] block says it's Stone): safe_destroy {block: "stone", direction: "forward"}.
+- "Break the block ahead and to the left": check it (get_blocks), then safe_destroy {block: "dirt", forward: 1, left: 1}.
+- "Break the block at 5 89 -3": safe_destroy {block: <what get_blocks says is there>, x: 5, y: 89, z: -3}.
+- "Dig down 3", through whatever is there: destroy down, move down 1, destroy down, move down 1, destroy down.
 - "Put a block under you": place {slot: 1, direction: "down"}.
 - "Put a block where you are": move {direction: "up"}, then place {slot: 1, direction: "down"}. Up blocked? move \
 {direction: "left"}, then place {slot: 1, direction: "right"}.
