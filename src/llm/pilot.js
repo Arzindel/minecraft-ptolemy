@@ -150,6 +150,11 @@ class Pilot extends EventEmitter {
     this._entry({ kind: 'notice', text });
   }
 
+  /** A chat message the robot was too distracted to catch: shown in the transcript, never sent to the model. */
+  missed(text, sender) {
+    this._entry({ kind: 'user', text, source: 'chat', sender, missed: true });
+  }
+
   /** A line of Ptolemy's own in the transcript (e.g. Forget and ADHD while wondering). */
   info(text) {
     this._entry({ kind: 'info', text });

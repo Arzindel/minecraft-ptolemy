@@ -77,7 +77,37 @@ class FakeBridge {
     }
     if ((m = /^agent turn (left|right)$/.exec(cmd))) { a.facing = (a.facing + (m[1] === 'right' ? 1 : 3)) % 4; return ok('Agent turned'); }
     if ((m = /^agent tp (-?\d+) (-?\d+) (-?\d+)$/.exec(cmd))) { a.x = +m[1]; a.y = +m[2]; a.z = +m[3]; return ok('Agent teleported'); }
-    if ((m = /^agent (destroy) (\w+)$/.exec(cmd))) return ok('Agent destroyed a block');
+    // The agent's hands: destroy clears a cell (not bedrock), place fills an empty one from an inventory
+    // slot filled with setitem (named the way testforblock names blocks: "oak_planks" → "Oak Planks").
+    const cellAt = (d) => {
+      const f = FORWARD[a.facing];
+      const off = { forward: f, back: f.map((v) => -v), up: [0, 1, 0], down: [0, -1, 0],
+        right: FORWARD[(a.facing + 1) % 4], left: FORWARD[(a.facing + 3) % 4] }[d];
+      return off && [a.x + off[0], a.y + off[1], a.z + off[2]];
+    };
+    this.inventory = this.inventory || new Map();
+    if ((m = /^agent destroy (\w+)$/.exec(cmd))) {
+      const c = cellAt(m[1]);
+      if (c && this.t.block(...c) !== 'Bedrock') this.t.edits.set(c.join(','), 'Air');
+      return ok('Agent destroyed a block');
+    }
+    if ((m = /^agent place (\d+) (\w+)$/.exec(cmd))) {
+      const c = cellAt(m[2]);
+      const item = this.inventory.get(+m[1]);
+      if (!c || !item || isSolid(this.t.block(...c))) return { ok: false, statusCode: -1, statusMessage: 'Agent failed to place', body: {} };
+      this.t.edits.set(c.join(','), item.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' '));
+      return ok('Agent placed a block');
+    }
+    if ((m = /^agent setitem (\d+) ([\w:]+) (\d+) (\d+)$/.exec(cmd))) {
+      this.inventory.set(+m[1], m[2].replace(/^minecraft:/, ''));
+      return ok('Agent set item');
+    }
+    if ((m = /^agent drop (\d+) (\d+) (\w+)$/.exec(cmd))) return ok('Agent dropped items');
+    if ((m = /^testforblock (-?\d+) (-?\d+) (-?\d+) ([a-z_:]+)$/.exec(cmd)) && m[4] !== 'air') {
+      const b = this.t.block(+m[1], +m[2], +m[3]);
+      if (b.toLowerCase().replace(/ /g, '_') === m[4].replace(/^minecraft:/, '')) return ok('Successfully found the block', { matches: true });
+      return { ok: false, statusCode: -1, statusMessage: `The block at ${m[1]},${m[2]},${m[3]} is ${b} (expected: ${m[4]}).`, body: { matches: false } };
+    }
     if ((m = /^testforblock (-?\d+) (-?\d+) (-?\d+) air$/.exec(cmd))) {
       const b = this.t.block(+m[1], +m[2], +m[3]);
       if (b === 'Air') return ok('The block at ... is Air', { matches: true });

@@ -77,6 +77,11 @@
       text.textContent = entry.kind === 'user' && entry.source === 'wonder' ? '(idle for a while: act natural)' : entry.text;
       if (entry.kind === 'user' && entry.source === 'wonder') li.classList.add('pilot-wonder');
       if (entry.kind === 'user' && entry.source === 'robot') li.classList.add('pilot-robot');
+      if (entry.missed) {
+        li.classList.add('pilot-missed');
+        text.textContent = `${entry.text}  (missed: it was distracted)`;
+        li.title = 'Distracted: this message never reached the model (Chat & wondering → Distracted)';
+      }
       if (entry.streaming) li.classList.add('streaming');
       li.append(who, text);
     }

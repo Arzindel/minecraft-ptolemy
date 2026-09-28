@@ -77,7 +77,7 @@ const SCHEMA = [
           + 'About 4 characters per token: lower it for models with a small context window.' },
       { key: 'llm.toolResultChars', label: 'Max characters per tool result', default: 3000, min: 200, max: 50000, step: 100 },
       { key: 'llm.scanResultChars', label: 'Max characters per scan result', default: 12000, min: 200, max: 100000, step: 100,
-        help: 'Scans (scan, surface) summarize everything they looked at, however big the radius asked for, so they get '
+        help: 'Scans (scan, survey) summarize everything they looked at, however big the radius asked for, so they get '
           + 'their own, larger limit.' },
       { key: 'llm.instructions', label: 'Extra instructions (every world)', type: 'textarea', default: '',
         help: 'Added to the system prompt in every world. Instructions for one world go on the Dashboard.' },
@@ -106,13 +106,20 @@ const SCHEMA = [
         help: 'A robot talking to this one stops its wondering to answer. Robots never interrupt a person\'s request: '
           + 'they wait their turn.' },
       { key: 'chat.interruptAlways', label: 'Players can always interrupt', type: 'boolean', default: true,
-        help: 'A player calling the robot (in the chat or the WebUI) makes it drop whatever it\'s doing and answer, even '
-          + 'another request. Off: only wondering is interrupted; a request waits its turn unless it contains an '
-          + 'interrupt word.' },
+        help: 'A player calling the robot in the chat makes it drop whatever it\'s doing and answer, even another request. '
+          + 'Off: only wondering is interrupted; a request waits its turn unless it contains an interrupt word. Requests '
+          + 'from the WebUI never interrupt: they wait their turn (the Stop button is there for that).' },
       { key: 'chat.interruptWords', label: 'Interrupt words', type: 'text', default: 'hey hey, wait, stop',
         help: 'Comma-separated, for when "Players can always interrupt" is off. A player calling the robot always '
           + 'interrupts its wondering; while it works on a request, new ones wait their turn unless they contain one of '
           + 'these words: then it drops what it\'s doing and answers. "Ptolemy, stop" on its own still just stops.' },
+      { key: 'chat.distractedChance', label: 'Distracted: chance to miss a message (%)', default: 5, min: 0, max: 100, step: 0.5,
+        help: 'A chat message calling the robot (from a player or another robot) is missed this often: it shows in the '
+          + 'transcript as missed, but the model never sees it and nothing is interrupted. Messages with an exception mark '
+          + '(below), a bare "Ptolemy, stop" and anything from the WebUI are never missed. 0: always listens.' },
+      { key: 'chat.distractedExceptions', label: 'Distracted: never miss messages with', type: 'text', default: '!',
+        help: 'Comma-separated marks or words; a message containing any of them always gets through. Default "!": '
+          + '"Ptolemy, come here!" is never missed.' },
     ],
   },
   {
@@ -202,6 +209,18 @@ const SCHEMA = [
         help: 'Reads the game\'s clock and weather (time query, weather query: three commands, never changing anything). '
           + 'In between, the time is worked out from the last reading. The model is told the time with every request, '
           + 'and the Dashboard shows it. 0: only when something asks for it.' },
+    ],
+  },
+  {
+    tab: 'robot',
+    group: 'Inventory',
+    help: 'The robot\'s 27 inventory slots can\'t be read, only written (agent setitem). A held slot (Dashboard, #hold, or '
+      + 'the hold tool) is refilled with its item every few seconds, so it never runs out and the model knows what\'s in it.',
+    fields: [
+      { key: 'inventory.refreshSeconds', label: 'Refill held slots every (seconds)', default: 1, min: 0, max: 60, step: 0.5,
+        help: 'One agent setitem per held slot each time. 0: only when a slot is first held.' },
+      { key: 'inventory.amount', label: 'Items put in a held slot', default: 64, min: 1, max: 64, step: 1,
+        help: 'The count setitem puts there each time. It stands for "unlimited": the model isn\'t told the number.' },
     ],
   },
   {

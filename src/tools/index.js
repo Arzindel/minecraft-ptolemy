@@ -8,6 +8,7 @@ const { CLEAR } = require('../world/map');
 const { checkCells, unknownAround, surveyColumns } = require('../agent/survey');
 const { placeholderHelp } = require('../agent/clock');
 const entities = require('../agent/entities');
+const inv = require('../agent/inventory');
 
 // Tools the LLM (and MCP clients) drive the robot with. Most are shortcuts that bundle several
 // game commands and report what actually happened, since the game's own replies say "success"
@@ -102,7 +103,9 @@ function orientationText(facing) {
   }).join(', ');
 }
 
-const DIRECTION_HELP = 'One of the six blocks touching the robot.';
+const DIRECTION_HELP = 'Which of the six cells touching the robot, as seen from the robot: forward = the cell in front of it, '
+  + 'back = behind it, left / right = beside it, up = the cell right above it, down = the cell right under it. "down" never '
+  + 'means "put it down": a block placed in front of the robot is direction forward.';
 const dirParam = (description) => ({ type: 'string', enum: DIRECTIONS, description: `${description} ${DIRECTION_HELP}` });
 // A position is either relative (counts of blocks from the robot, by direction) or world (x, y, z).
 // The two never share names, so the model can't mix them up.
@@ -136,10 +139,11 @@ const POSITION = {
  * @param {(mode: string) => void} [deps.setWonder]   switch wondering off / on / always
  * @param {import('../agent/clock').Clock} [deps.clock]   the game's time and weather
  * @param {(text: string) => Promise<string>} [deps.placeholders]   fills in {time_now} and friends
+ * @param {import('../agent/inventory').Inventory} [deps.inventory]   held inventory slots
  */
 function createToolbox({
   bridge, world, navigator, settings, scan, lookForEntities, log, sight, worlds, notify, activity, setWonder, clock = null,
-  placeholders = async (text) => text,
+  placeholders = async (text) => text, inventory = null,
 }) {
   const memory = () => {
     if (!worlds.current) throw new Error('no world is loaded yet (is Minecraft connected?)');
@@ -209,11 +213,68 @@ function createToolbox({
       after = await blockAt(x, y, z);
     }
     world.setBlock(x, y, z, after);
-    const frame = await frameNow(pose);
     const where = `${direction} of the robot (${Frame.world(x, y, z)})`;
     const game = `The game said: "${res.statusMessage}".`;
-    if (before === after) return `Nothing changed ${where}: it is still ${after}. ${game}`;
-    return `The block ${where} went from ${before} to ${after}. ${game}`;
+    if (before !== after) return `The block ${where} went from ${before} to ${after}. ${game}`;
+    let hint = '';
+    if (verb === 'destroy' && after === 'Air') hint = ' There was nothing there to break.';
+    if (verb === 'place' && after !== 'Air' && isSolid(after)) {
+      hint = ` That cell isn't empty, so nothing could be placed there: use replace to break it and place in one go, or pick `
+        + 'another direction.';
+    } else if (verb === 'place') {
+      hint = ' Maybe that inventory slot is empty (hold keeps a slot stocked, give_item needs no slot).';
+    }
+    return `Nothing changed ${where}: it is still ${after}. ${game}${hint}`;
+  }
+
+  /** The cell beside the robot in a direction: [x, y, z]. */
+  async function cellToward(direction) {
+    const pose = await getAgentPose(bridge);
+    const [dx, dy, dz] = offsetOf(direction, pose.facing);
+    return [pose.x + dx, pose.y + dy, pose.z + dz];
+  }
+
+  /**
+   * Is the block at this cell the block asked for? The name the game gave ("Oak Log") is compared with
+   * the id asked for ("oak_log", "minecraft:oak_log"), and if they differ the game is asked with
+   * testforblock (which knows old names like "log" and "wood" too). Resolves to { ok, current }.
+   */
+  async function blockMatches(cell, wanted) {
+    const norm = (b) => String(b).trim().toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_');
+    const current = await blockAt(...cell);
+    const want = norm(wanted);
+    if (!/^[a-z0-9_:]+$/.test(want)) throw new Error(`"${wanted}" isn't a block id (e.g. oak_log, stone)`);
+    if (norm(current) === want) return { ok: true, current };
+    const res = await bridge.sendCommand(`testforblock ${cell.join(' ')} ${want}`, { quiet: true });
+    if (res.body && res.body.matches === true) return { ok: true, current };
+    if (!res.ok && !/\bis .+\(expected/i.test(res.statusMessage || '')) {
+      throw new Error(`the game doesn't know the block "${wanted}" (${res.statusMessage})`);
+    }
+    return { ok: false, current };
+  }
+
+  /** Break what's in a cell beside the robot (if anything), then place from a slot there. */
+  async function replaceCell(direction, slot) {
+    const cell = await cellToward(direction);
+    const before = await blockAt(...cell);
+    const lines = [];
+    if (before !== 'Air') {
+      lines.push(await actOnCell('destroy', direction));
+      const now = await blockAt(...cell);
+      if (now !== 'Air' && isSolid(now)) return `${lines.join(' ')} It is still ${now}, so nothing was placed.`;
+    }
+    lines.push(await actOnCell('place', direction, `${slot} `));
+    return lines.join(' ');
+  }
+
+  /** The horizontal direction (forward, back, left, right) that points most towards a spot. */
+  function directionToward(pose, p) {
+    const dx = p.x - pose.x;
+    const dz = p.z - pose.z;
+    return ['forward', 'back', 'left', 'right'].map((d) => {
+      const [ox, , oz] = offsetOf(d, pose.facing);
+      return { d, score: ox * dx + oz * dz };
+    }).sort((a, b) => b.score - a.score)[0].d;
   }
 
   /** Which of the six directions leads from the robot's cell to a face-adjacent cell, or null. */
@@ -625,14 +686,21 @@ function createToolbox({
 
   // --- Acting on blocks -------------------------------------------------------
 
+  const WHERE = 'Give EITHER direction (for a cell touching the robot) OR the cell\'s position, relative (e.g. {forward: 2, '
+    + 'left: 1}) or world ({x, y, z}), at any distance: the robot first walks to a spot beside it. The robot never moves '
+    + 'into that cell.';
+  const SLOT = { type: 'integer', minimum: 1, maximum: 27, description: 'Inventory slot (1-27). Your memory says which slots are '
+    + 'kept stocked with what; the others are unknown.' };
+  const BLOCK = { type: 'string', description: 'The block id it must be, e.g. "oak_log", "stone", "dirt".' };
+
   add({
     name: 'destroy',
-    description: 'Break one block. The robot stays where it is and breaks the block beside it in the given direction: it never '
-      + 'moves into the block. Give either a direction (for a block touching the robot) or the block\'s position, relative '
-      + '(e.g. forward 1, left 1) or world (x, y, z), at any distance: the robot first walks to a spot beside it. '
-      + 'The drop may go into the robot\'s inventory or onto the ground.',
+    description: 'Break the one block in a cell touching the robot. The robot stays where it is. '
+      + `${WHERE} Examples: the block in front: {direction: "forward"}; the block the robot stands on: {direction: "down"}; `
+      + 'a block ahead and to the left: {forward: 1, left: 1}. The drop may go into the robot\'s inventory or onto the ground. '
+      + 'To break only a certain kind of block, use safe_destroy.',
     destructive: true,
-    parameters: { type: 'object', properties: { direction: dirParam('Which neighbouring block.'), ...POSITION_PROPS } },
+    parameters: { type: 'object', properties: { direction: dirParam('Which cell\'s block to break.'), ...POSITION_PROPS } },
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
@@ -641,23 +709,76 @@ function createToolbox({
   });
 
   add({
-    name: 'place',
-    description: 'Place a block from one of the robot\'s inventory slots (1-27) into an empty cell. The robot stays where it is '
-      + 'and fills the cell beside it in the given direction. Give either a direction or the empty cell\'s position (relative '
-      + 'or world, any distance: the robot first walks to a spot beside it).',
+    name: 'safe_destroy',
+    description: 'Like destroy, but first checks that the block is the one named (e.g. "oak_log"), and breaks it only if so. '
+      + `Use it when breaking the wrong block would be bad: felling a tree next to a house, digging near what was built. ${WHERE}`,
+    destructive: true,
     parameters: {
       type: 'object',
-      properties: {
-        slot: { type: 'integer', minimum: 1, maximum: 27 },
-        direction: dirParam('Which neighbouring cell to fill.'),
-        ...POSITION_PROPS,
-      },
+      properties: { block: BLOCK, direction: dirParam('Which cell\'s block to break.'), ...POSITION_PROPS },
+      required: ['block'],
+    },
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      const check = await blockMatches(await cellToward(r.direction), args.block);
+      if (!check.ok) return `${r.note}Not destroyed: the block ${r.direction} of the robot is ${check.current}, not ${args.block}.`;
+      return r.note + await actOnCell('destroy', r.direction);
+    },
+  });
+
+  add({
+    name: 'place',
+    description: 'Put a block from an inventory slot into an EMPTY cell touching the robot (air, water, grass...). The robot '
+      + `stays where it is. ${WHERE} Examples: a block in front of the robot: {slot: 1, direction: "forward"}; a block under `
+      + 'the robot (a floor or a bridge under itself): {slot: 1, direction: "down"}; on top of it: "up". '
+      + 'If the cell holds a block, use replace instead.',
+    parameters: {
+      type: 'object',
+      properties: { slot: SLOT, direction: dirParam('Which cell to fill.'), ...POSITION_PROPS },
       required: ['slot'],
     },
     async run(args) {
       const r = await reach(args);
       if (r.error) throw new Error(r.error);
       return r.note + await actOnCell('place', r.direction, `${clampInt(args.slot, 1, 27)} `);
+    },
+  });
+
+  add({
+    name: 'replace',
+    description: 'Put a block from an inventory slot into a cell touching the robot, whatever is there now: it breaks the '
+      + 'block first (if any), then places. It always ends with the new block there, unless the slot is empty (then it only '
+      + `breaks) or the old block can't be broken. ${WHERE} To replace only a certain kind of block, use safe_replace.`,
+    destructive: true,
+    parameters: {
+      type: 'object',
+      properties: { slot: SLOT, direction: dirParam('Which cell.'), ...POSITION_PROPS },
+      required: ['slot'],
+    },
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      return r.note + await replaceCell(r.direction, clampInt(args.slot, 1, 27));
+    },
+  });
+
+  add({
+    name: 'safe_replace',
+    description: 'Like replace, but only if the block there now is the one named (e.g. replace "dirt" with planks from a slot); '
+      + `otherwise it does nothing. ${WHERE}`,
+    destructive: true,
+    parameters: {
+      type: 'object',
+      properties: { block: BLOCK, slot: SLOT, direction: dirParam('Which cell.'), ...POSITION_PROPS },
+      required: ['block', 'slot'],
+    },
+    async run(args) {
+      const r = await reach(args);
+      if (r.error) throw new Error(r.error);
+      const check = await blockMatches(await cellToward(r.direction), args.block);
+      if (!check.ok) return `${r.note}Not replaced: the block ${r.direction} of the robot is ${check.current}, not ${args.block}.`;
+      return r.note + await replaceCell(r.direction, clampInt(args.slot, 1, 27));
     },
   });
 
@@ -687,20 +808,89 @@ function createToolbox({
 
   add({
     name: 'drop',
-    description: 'Drop items from one of the robot\'s inventory slots (1-27) in a direction.',
+    description: 'Drop items from one of the robot\'s inventory slots (1-27) onto the ground beside it, e.g. to hand a player '
+      + 'something from a held slot. To give an item that isn\'t in a held slot, use give_item.',
     parameters: {
       type: 'object',
       properties: {
-        slot: { type: 'integer', minimum: 1, maximum: 27 },
-        quantity: { type: 'integer', minimum: 1, maximum: 64 },
-        direction: dirParam('Which way to drop.'),
+        slot: SLOT,
+        quantity: { type: 'integer', minimum: 1, maximum: 64, description: 'How many (default 1).' },
+        direction: dirParam('Which way to drop (default forward).'),
       },
-      required: ['slot', 'direction'],
+      required: ['slot'],
     },
-    async run({ slot, quantity, direction }) {
+    async run({ slot, quantity, direction = 'forward' }) {
       checkDirection(direction);
-      const res = await bridge.sendCommand(`agent drop ${clampInt(slot, 1, 27)} ${clampInt(quantity ?? 64, 1, 64)} ${direction}`);
-      return `The game said: "${res.statusMessage}".`;
+      const n = clampInt(quantity ?? 1, 1, 64);
+      const res = await bridge.sendCommand(`agent drop ${clampInt(slot, 1, 27)} ${n} ${direction}`);
+      return `Dropped ${n} from slot ${clampInt(slot, 1, 27)} ${direction}. The game said: "${res.statusMessage}".`;
+    },
+  });
+
+  add({
+    name: 'give_item',
+    description: 'Give items: they are made in the robot\'s scratch slot (27) and dropped beside it, towards the player who asked '
+      + 'if they are within a few blocks (otherwise forward). Go near the player first (go_to target "player"). Any item id '
+      + 'works, e.g. "oak_planks", "torch", "bread"; variant picks a variant for old ids (e.g. "wood" with variant 1 = spruce).',
+    parameters: {
+      type: 'object',
+      properties: {
+        item: { type: 'string', description: 'Item id, e.g. "oak_planks".' },
+        amount: { type: 'integer', minimum: 1, maximum: 64, description: 'How many (default 1).' },
+        variant: { type: 'integer', minimum: 0, description: 'Variant (data value), default 0.' },
+        direction: dirParam('Which way to drop them (default: towards the player who asked, if near; else forward).'),
+      },
+      required: ['item'],
+    },
+    async run({ item, amount, variant, direction }) {
+      const id = inv.itemId(item);
+      const n = clampInt(amount ?? 1, 1, 64);
+      const data = inv.variantNumber(variant ?? 0);
+      let dir = direction;
+      if (dir) checkDirection(dir);
+      else {
+        const pose = await getAgentPose(bridge);
+        const p = await players.playerPosition(bridge, requester);
+        dir = p && Math.hypot(p.x - pose.x, p.z - pose.z) <= 6 ? directionToward(pose, p) : 'forward';
+      }
+      const set = await bridge.sendCommand(`agent setitem ${inv.SCRATCH_SLOT} ${id} ${n} ${data}`);
+      if (!set.ok) throw new Error(`the game refused the item "${id}": ${set.statusMessage}`);
+      const res = await bridge.sendCommand(`agent drop ${inv.SCRATCH_SLOT} ${n} ${dir}`);
+      return `Dropped ${n} ${id}${data ? ` (variant ${data})` : ''} ${dir} of the robot. The game said: "${res.statusMessage}".`;
+    },
+  });
+
+  add({
+    name: 'hold',
+    description: 'Keep one of your inventory slots (1-26) stocked with an item for good: it is refilled every second, so it never '
+      + 'runs out, and your memory lists it. Use it before building with place / replace, e.g. hold {slot: 1, item: '
+      + '"oak_planks"}. Slot 27 is scratch space and can\'t be held.',
+    parameters: {
+      type: 'object',
+      properties: {
+        slot: { type: 'integer', minimum: 1, maximum: inv.HOLD_SLOTS },
+        item: { type: 'string', description: 'Item id, e.g. "oak_planks", "cobblestone", "glass".' },
+        variant: { type: 'integer', minimum: 0, description: 'Variant (data value) for old ids, default 0.' },
+      },
+      required: ['slot', 'item'],
+    },
+    async run({ slot, item, variant }) {
+      if (!inventory) throw new Error('holding items isn\'t available here');
+      const h = await inventory.hold(slot, item, variant ?? 0);
+      return `Slot ${h.slot} now holds ${h.item}${h.data ? ` (variant ${h.data})` : ''} and is kept stocked.`;
+    },
+  });
+
+  add({
+    name: 'release',
+    description: 'Stop keeping a slot (1-26) stocked. The slot can\'t be emptied, so afterwards what\'s in it is simply unknown.',
+    offline: true,
+    parameters: { type: 'object', properties: { slot: { type: 'integer', minimum: 1, maximum: inv.HOLD_SLOTS } }, required: ['slot'] },
+    async run({ slot }) {
+      if (!inventory) throw new Error('holding items isn\'t available here');
+      const old = inventory.release(slot);
+      return old ? `Slot ${old.slot} is no longer kept stocked with ${old.item}; what's in it is unknown now.`
+        : `Slot ${slot} wasn't held.`;
     },
   });
 

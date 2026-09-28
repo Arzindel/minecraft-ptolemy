@@ -14,6 +14,7 @@ const { CommandCatalog } = require('../commands');
 const { getAgentPose } = require('../agent/pose');
 const { allPlayers } = require('../agent/players');
 const { Clock, expandPlaceholders } = require('../agent/clock');
+const { Inventory } = require('../agent/inventory');
 
 const POSITION_POLL_MS = 4000;
 // Other robots heard in the chat within this long are named to the model (so it can talk to them).
@@ -43,6 +44,12 @@ class Brain {
     this.clock.on('change', () => this.broadcast(this.clock.message()));
     const placeholders = (text) => expandPlaceholders(text, { bridge, clock: this.clock });
     this.robotsHeard = new Map(); // other robots' names -> when they last spoke in the chat
+    // Inventory slots kept stocked with an item (per world), refilled with agent setitem.
+    this.inventory = new Inventory({ bridge, settings, worlds: this.worlds });
+    this.inventory.on('change', () => this.broadcast(this.inventory.message()));
+    settings.on('change', (changed) => {
+      if ('inventory.amount' in changed) this.broadcast(this.inventory.message());
+    });
 
     this.toolbox = createToolbox({
       bridge,
@@ -62,6 +69,7 @@ class Brain {
       setWonder: (mode) => this.wonder.setMode(mode),
       clock: this.clock,
       placeholders,
+      inventory: this.inventory,
     });
     // Commands tab: editable descriptions of the tools (what the model reads), # and / commands.
     this.commands = new CommandCatalog({ tools: this.toolbox.tools });
@@ -109,6 +117,7 @@ class Brain {
       this.broadcast(settings.message());
       this._broadcastMemory();
       this.broadcast(this.worlds.status());
+      this.broadcast(this.inventory.message());
     });
     this.worlds.on('memory', () => this._broadcastMemory());
     this.worlds.on('status', () => {
@@ -147,6 +156,7 @@ class Brain {
       this.pilot.state(),
       this.wonder.state(),
       this.clock.message(),
+      this.inventory.message(),
       this.worlds.status(),
       this._memoryMessage(),
       this.positions,
@@ -200,6 +210,7 @@ class Brain {
       reply(this.pilot.stop() ? 'Stopping.' : 'I wasn\'t doing anything.');
       return;
     }
+    if (this._distracted(message, sender)) return;
     if (!rest) {
       reply(`Yes? Say "${name}, <what to do>".`);
       return;
@@ -223,9 +234,24 @@ class Brain {
     return !(ignore && text.toLowerCase().includes(ignore.toLowerCase()));
   }
 
+  /**
+   * Distracted: a chat message calling the robot is missed now and then (chat.distractedChance), unless
+   * it has an exception mark ("!"). It goes in the transcript as missed; the model never sees it.
+   */
+  _distracted(text, sender) {
+    const chance = this.settings.get('chat.distractedChance');
+    if (!(chance > 0)) return false;
+    const marks = String(this.settings.get('chat.distractedExceptions') || '').split(',').map((m) => m.trim()).filter(Boolean);
+    if (marks.some((m) => text.toLowerCase().includes(m.toLowerCase()))) return false;
+    if (Math.random() * 100 >= chance) return false;
+    this.pilot.missed(text, sender);
+    return true;
+  }
+
   /** Another robot said something in the chat: a request if it said this robot's name. */
   _robotChat(robot) {
     if (!this._callsMe(robot.text)) return;
+    if (this._distracted(robot.text, `${robot.name} (robot)`)) return;
     this.pilot.send(robot.text, {
       source: 'robot', sender: robot.name, interrupt: this.settings.get('chat.robotsInterrupt') ? 'wonder' : false,
     });
@@ -252,8 +278,9 @@ class Brain {
     const e = this.endpoints;
     switch (msg.type) {
       case 'pilotSend':
+        // The WebUI never interrupts (it has a Stop button): its requests wait their turn.
         this.wonder.personRequested();
-        this.pilot.send(msg.text, { source: 'ui', interrupt: this._personInterrupt(String(msg.text || '')) });
+        this.pilot.send(msg.text, { source: 'ui', interrupt: false });
         return true;
       case 'pilotStop':
         this.pilot.stop();
@@ -335,6 +362,16 @@ class Brain {
         await this.bridge.sendCommand('agent create');
         await w.checkAgent();
         return;
+      case 'hold': {
+        const h = await this.inventory.hold(msg.slot, msg.item, msg.data || 0);
+        this.log(`Slot ${h.slot} now holds ${h.item}${h.data ? ` (variant ${h.data})` : ''}, kept stocked.`);
+        return;
+      }
+      case 'release': {
+        const old = this.inventory.release(msg.slot);
+        if (old) this.log(`Slot ${old.slot} is no longer kept stocked with ${old.item}.`);
+        return;
+      }
       case 'toDefaults':
         this.settings.worldToDefaults();
         this.log('This world\'s robot & path settings are now the defaults for new worlds.');
@@ -370,17 +407,23 @@ class Brain {
 
   // --- Console commands ----------------------------------------------------------
 
-  /** #area, #boundary, #world, #wonder, #ask, #endpoint. Returns true if handled. */
+  /** #area, #boundary, #world, #wonder, #ask, the block and inventory commands. Returns true if handled. */
   console(name, args, text) {
     const say = (line) => this.log(line);
     const m = this.worlds.current;
+    const tool = CONSOLE_TOOLS[name];
+    if (tool) {
+      const parsed = tool.parse(args);
+      if (!parsed) say(`Usage: #${name} ${tool.usage}`);
+      else this.toolbox.call(tool.name, parsed, { origin: 'Console' }).then((res) => say(res.text));
+      return true;
+    }
     switch (name) {
       case 'ask':
         if (!args.length) say('Usage: #ask <request for the LLM>');
         else {
           this.wonder.personRequested();
-          const request = text.replace(/^\S+\s*/, '');
-          this.pilot.send(request, { source: 'ui', interrupt: this._personInterrupt(request) });
+          this.pilot.send(text.replace(/^\S+\s*/, ''), { source: 'ui', interrupt: false });
         }
         return true;
       case 'wonder':
@@ -479,10 +522,49 @@ class Brain {
   close() {
     clearInterval(this._poll);
     clearInterval(this._clockTimer);
+    this.inventory.close();
     this.wonder.close();
     if (this.worlds.current) this.worlds.current.save();
   }
 }
+
+// Console commands that run a tool: #name args → the tool, with arguments parsed from the words.
+const DIRS = ['forward', 'back', 'left', 'right', 'up', 'down'];
+const isInt = (v) => /^\d+$/.test(v || '');
+const isDir = (v) => DIRS.includes(String(v || '').toLowerCase());
+const CONSOLE_TOOLS = {
+  safe_destroy: {
+    name: 'safe_destroy', usage: '<block> <direction>',
+    parse: ([block, dir]) => (block && isDir(dir) ? { block, direction: dir.toLowerCase() } : null),
+  },
+  replace: {
+    name: 'replace', usage: '<slot> <direction>',
+    parse: ([slot, dir]) => (isInt(slot) && isDir(dir) ? { slot: Number(slot), direction: dir.toLowerCase() } : null),
+  },
+  safe_replace: {
+    name: 'safe_replace', usage: '<block> <slot> <direction>',
+    parse: ([block, slot, dir]) => (block && isInt(slot) && isDir(dir) ? { block, slot: Number(slot), direction: dir.toLowerCase() } : null),
+  },
+  hold: {
+    name: 'hold', usage: '<slot 1-26> <item> [variant]',
+    parse: ([slot, item, variant]) => (isInt(slot) && item && (variant === undefined || isInt(variant))
+      ? { slot: Number(slot), item, variant: Number(variant || 0) } : null),
+  },
+  release: { name: 'release', usage: '<slot 1-26>', parse: ([slot]) => (isInt(slot) ? { slot: Number(slot) } : null) },
+  drop_inv: {
+    name: 'drop', usage: '<slot> [amount] [direction]',
+    parse: ([slot, amount, dir]) => {
+      if (!isInt(slot) || (amount !== undefined && !isInt(amount) && !isDir(amount)) || (dir !== undefined && !isDir(dir))) return null;
+      const direction = isDir(amount) ? amount : dir;
+      return { slot: Number(slot), quantity: isInt(amount) ? Number(amount) : 1, direction: (direction || 'forward').toLowerCase() };
+    },
+  },
+  give_item: {
+    name: 'give_item', usage: '<item> [amount] [variant]',
+    parse: ([item, amount, variant]) => (item && (amount === undefined || isInt(amount)) && (variant === undefined || isInt(variant))
+      ? { item, amount: Number(amount || 1), variant: Number(variant || 0) } : null),
+  },
+};
 
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

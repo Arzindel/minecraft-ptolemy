@@ -116,6 +116,13 @@ Lines starting with `#` are handled by Ptolemy instead of being sent to the game
 | `#unsubscribe <Event> [Event...]` | Stop receiving those events |
 | `#scan [radius] [blocks\|entities\|both]` | Look around the agent. `blocks`: identify every block in a cube reaching `radius` blocks out from the agent in every direction (2 = 5×5×5, up to 15 = 31×31×31), the same unit as the Nanny Cam's Zoom; without a radius, the default from the Configuration tab (4). `entities`: the mobs, animals, players and dropped items within `radius` blocks (default 16, up to 48), with every raw command reply in the log entry's details. `both` (the default): the two at once, entities at least 16 blocks out. See [Scanning](#scanning) and [Seeing entities](#seeing-entities) |
 | `#survey [radius]` | A view of the land from above: `gettopsolidblock` on every column around the agent (default 8 blocks out = 17×17 columns, up to 24), printed as a grid of heights with cliffs, walls and trees called out. It sees how far down a cliff goes or how high a wall or tree is, which a `#scan` cube misses. Same as the LLM's `survey` tool |
+| `#safe_destroy <block> <direction>` | Break the block touching the agent in that direction only if it is that block (e.g. `#safe_destroy oak_log forward`). Directions are always from the agent: `up` is the cell above it, `down` the one under it |
+| `#replace <slot> <direction>` | Break the block there (if any), then place one from the inventory slot. If the slot is empty it only breaks |
+| `#safe_replace <block> <slot> <direction>` | `#replace`, only if the block there is that block |
+| `#hold <slot 1-26> <item> [variant]` | Keep an inventory slot stocked with an item, and tell the LLM. See [Inventory](#inventory) |
+| `#release <slot 1-26>` | Stop keeping a slot stocked |
+| `#drop_inv <slot> [amount] [direction]` | Drop items from a slot (default 1, forward) |
+| `#give_item <item> [amount] [variant]` | Make items in scratch slot 27 and drop them, towards you if you're near the agent |
 | `#inflight <n>` | How many commands may be outstanding at once: 100 by default, which is also the maximum. Bedrock silently drops every request beyond 100 in flight (at N in flight, exactly N − 100 never get answered) |
 | `#pathfind <x y z \| @p>` | Plan a route for the agent that stays next to blocks, like it walks and climbs (see [Pathfinding](#pathfinding)) |
 | `#pathwalk` | Walk the last planned route, checking the agent's pose after every step |
@@ -529,9 +536,13 @@ report what really happened, because the game says "success" even when the robot
 | `turn` | Turn left, right or around, or face north/south/east/west |
 | `go_to` | Pathfinding (`#pathfindwalk`) to coordinates, to the player or to a named area, optionally flying. Meant for longer trips: it refuses to walk to a solid block a few blocks away and points to `destroy`/`place` instead |
 | `teleport_to_player` | `agent tp`, only when the request asks for a teleport (asking to fly isn't enough) |
-| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions (forward, back, left, right, up, down). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after. `place` takes an inventory slot |
+| `destroy`, `place`, `attack` | Act on the cell beside the robot, in one of six directions as seen from the robot (forward, back, left, right, up = the cell above it, down = the cell under it). The robot never moves into it. Given a block's position instead (relative or world), they first walk the robot beside it. The cell is checked before and after, and a failure says why (nothing to break, the cell isn't empty, the slot may be empty). `place` takes an inventory slot and only fills an empty cell |
+| `safe_destroy` | `destroy`, only if the block is the one named (`oak_log`): compared by name, then with `testforblock` |
+| `replace`, `safe_replace` | Break whatever is in the cell, then place from a slot: it always ends with the new block, unless the slot is empty (it only breaks) or the old block can't be broken. `safe_replace` only if the block there is the one named |
+| `hold`, `release` | Keep an inventory slot (1-26) stocked with an item, or stop. See [Inventory](#inventory) |
+| `give_item` | Any item, any amount (1-64): made in scratch slot 27 and dropped towards the player who asked (if within 6 blocks, else forward) |
 | `locate` | One position, given relative or world, in both forms, plus the block there and its area |
-| `collect`, `drop` | Pick up items nearby, or drop items from a slot |
+| `collect`, `drop` | Pick up items nearby, or drop items from a slot (default 1, forward) |
 | `send_chat` | A message in the game chat from the robot (`<Ptolemy> ...`, via `tellraw`), whoever asked, to players or other robots. [Placeholders](#time-weather-and-placeholders) are filled in as it's sent |
 | `send_webui` | A highlighted message in the Automatic tab, whoever asked. Placeholders are filled in too |
 | `get_memory` | This world's memory (the LLM also gets it in its prompt) |
@@ -546,6 +557,24 @@ report what really happened, because the game says "success" even when the robot
 | `run_command` | A Minecraft command, with the game's raw reply: the escape hatch for everything else. Never one that acts on players |
 
 `run_command` and `destroy`/`attack` can be turned off under **Tools and MCP**.
+
+### Inventory
+
+The agent has 27 inventory slots (three rows of nine in the game). Nothing can read them, but
+`agent setitem <slot> <item> <count> <variant>` writes them (`agent setitem 1 wood 8 1` puts 8 spruce wood
+in slot 1). So instead of knowing what's in a slot, Ptolemy makes sure of it:
+
+- **Holding** a slot (1-26) refills it with its item every second (`inventory.refreshSeconds`, 64 items by
+  default: `inventory.amount`), so it never runs out. The model's memory lists the held slots, without
+  the amount, which stands for "unlimited". Held slots are kept per world.
+- **Releasing** only stops tracking a slot. A slot can't be emptied (a count of 0 gives 1), so what's left in
+  it simply becomes unknown, and the model is told so.
+- **Slot 27 is scratch space:** `give_item` puts the items there and drops them straight away.
+- Hold and release from the Dashboard's **Inventory** card (click a slot, type an item id and an optional
+  variant, **Hold**), with `#hold` / `#release`, or by asking the robot ("hold oak planks in slot 1").
+
+The model is taught to hold a block before building with it, to use `replace` when a cell isn't empty, and
+that direction `down` is the cell under the robot, not "put it down".
 
 ### Seeing entities
 
@@ -581,10 +610,16 @@ and whether it listens and answers at all, are in the **Chat & wondering** card 
 
 - **Only my player can call it** (off by default): only the player at this Ptolemy (the name the game
   reports with `getlocalplayername`) can give requests. Off: every player can.
-- **Interrupting:** a player calling the robot always interrupts its wondering. With **Players can always
-  interrupt** on (the default), it also drops a request it's working on to answer the new one. Off: new
-  requests wait their turn, unless they contain an **interrupt word** (`hey hey, wait, stop` by default,
-  comma-separated). `Ptolemy, stop` on its own still just stops.
+- **Interrupting:** a player calling the robot in the chat always interrupts its wondering. With **Players
+  can always interrupt** on (the default), it also drops a request it's working on to answer the new one.
+  Off: new requests wait their turn, unless they contain an **interrupt word** (`hey hey, wait, stop` by
+  default, comma-separated). `Ptolemy, stop` on its own still just stops. Requests from the **WebUI never
+  interrupt**, not even wondering: they wait their turn, and the Stop button is there to cut in.
+- **Distracted:** a chat message calling the robot (from a player or another robot) is missed now and then
+  (**Distracted: chance to miss a message**, 5% by default). It shows in the transcript, crossed out, but the
+  model never sees it and nothing is interrupted. Messages containing an exception mark (**Distracted: never
+  miss messages with**, `!` by default, comma-separated) are never missed, and neither are a bare
+  `Ptolemy, stop` or anything from the WebUI.
 - **Listen to other robots** (on): another player's Ptolemy robot can talk to this one by saying its name.
   Robot lines are recognised by their `<Name>` tellraw format; the robot's own lines are recognised by what
   it just said. Robots can't stop the robot, can't allow flying or teleporting, and never interrupt a
@@ -658,7 +693,8 @@ The LLM sees all of it in its system prompt, and MCP clients can read it with `g
 
 ## The Robot tab
 
-The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Robot tab puts everything on one screen:
+The WebUI has four tabs: **Robot**, **Commands**, **Configuration** and **Tutorial** (how everything works,
+plus every setting with its default and help, straight from the settings; click a group to jump to it). The Robot tab puts everything on one screen:
 
 - **Top half: the dashboard.** It fills the space exactly, so it doesn't scroll:
   - All cards share one height, the dashboard's height split evenly over the rows.
@@ -674,6 +710,7 @@ The WebUI has three tabs: **Robot**, **Commands** and **Configuration**. The Rob
   - Chat & wondering settings: wake word, ignore word, chat replies, who may call it (only your player,
     other robots), interrupting, the wondering interval, step limit and prompt, and On its mind
     (fading thoughts, Forget and ADHD).
+  - Inventory: the 27 slots in three rows, which are held and with what; click one to hold or release it.
   - The robot's memory: the todo list (click a mark to go pending → in progress → done), what's on
     its mind, areas (add them by coordinates, or as a box around you or the robot), notes, recent
     activity, and this world's instructions.
@@ -829,11 +866,12 @@ src/
   llm/pilot.js           the Automatic mode loop and conversation
   llm/wonder.js          wondering: the idle timer, Forget and ADHD
   agent/clock.js         the game's time and weather (read-only), and the {time_now}-style placeholders
+  agent/inventory.js     held inventory slots, kept stocked with agent setitem
   mcp/server.js          MCP over HTTP at /mcp
   mcp/stdio.js           MCP over stdio, relaying to /mcp (npm run mcp)
 public/
   index.html, style.css, app.js   the WebUI
-  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js   the tabs and panels
+  dashboard.js, automatic.js, nannycam.js, config.js, endpoints.js, commands.js, tutorial.js   the tabs and panels
   blocks.js              block colours / solidity
 bench/
   sim.js                 a simulated world and a fake game answering Ptolemy's commands

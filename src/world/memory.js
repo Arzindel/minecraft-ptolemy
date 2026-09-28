@@ -16,6 +16,7 @@ const SAVE_DELAY_MS = 300;
  *   - notes:    facts worth keeping ("the chest with wood is at 10 64 5")
  *   - journal:  what it was asked recently and how that went
  *   - instructions: extra instructions for the LLM, for this world only
+ *   - held:     inventory slots Ptolemy keeps stocked with an item ("hold"), since it can't read them
  * The conversation with the LLM is kept next to it, in conversation.json.
  */
 class WorldMemory extends EventEmitter {
@@ -33,6 +34,7 @@ class WorldMemory extends EventEmitter {
       thoughts: data.thoughts || [],
       notes: data.notes || [],
       journal: data.journal || [],
+      held: data.held || [],
       nextId: data.nextId || 1,
     };
     this._timer = null;
@@ -223,6 +225,25 @@ class WorldMemory extends EventEmitter {
     return old;
   }
 
+  // --- Held inventory slots ------------------------------------------------------
+
+  /** Remember that a slot is kept stocked with an item (see agent/inventory.js). */
+  setHeld(slot, item, data = 0) {
+    this.data.held = this.data.held.filter((h) => h.slot !== slot);
+    this.data.held.push({ slot, item, data });
+    this.data.held.sort((a, b) => a.slot - b.slot);
+    this._changed();
+  }
+
+  /** Stop tracking a slot. Returns what it held, or null. */
+  releaseHeld(slot) {
+    const old = this.data.held.find((h) => h.slot === slot) || null;
+    if (!old) return null;
+    this.data.held = this.data.held.filter((h) => h.slot !== slot);
+    this._changed();
+    return old;
+  }
+
   addJournal(entry) {
     this.data.journal.push({ time: Date.now(), ...entry });
     this.data.journal = this.data.journal.slice(-LIMITS.journal);
@@ -281,6 +302,11 @@ class WorldMemory extends EventEmitter {
     if (recent.length) {
       lines.push(`Recently:\n${recent.map((j) => `- ${ago(j.time)}: ${j.request ? `"${j.request.slice(0, 80)}" → ` : ''}${(j.result || '').slice(0, 120)}`).join('\n')}`);
     }
+    lines.push(d.held.length
+      ? `Your inventory (you can't look inside it; these slots are kept stocked and never run out):\n${d.held
+        .map((h) => `- slot ${h.slot}: ${h.item}${h.data ? ` (variant ${h.data})` : ''}`).join('\n')}\nEvery other slot: unknown. `
+        + 'Slot 27 is scratch space for give_item.'
+      : 'Your inventory: unknown (you can\'t look inside it, and no slot is kept stocked). Slot 27 is scratch space for give_item.');
     if (d.instructions.trim()) lines.push(`Instructions for this world:\n${d.instructions.trim()}`);
     return lines.join('\n');
   }
